@@ -515,6 +515,17 @@ class EmailReader:
             # 解析邮件
             msg = email.message_from_string(source, policy=policy.default)
 
+            # Fallback: 如果传入的 message_id 为空，尝试从 MIME 头部提取
+            if not message_id:
+                message_id = msg.get("Message-ID", "")
+                if message_id:
+                    logger.info(f"Extracted Message-ID from MIME headers: {message_id}")
+
+            if not message_id:
+                source_hash = hashlib.md5(source.encode('utf-8', errors='replace')).hexdigest()[:12]
+                message_id = f"<generated-{source_hash}@local>"
+                logger.warning(f"Generated fallback message_id: {message_id}")
+
             # 1. 提取基本信息
             subject = msg.get("Subject", "")
             sender_raw = msg.get("From", "")

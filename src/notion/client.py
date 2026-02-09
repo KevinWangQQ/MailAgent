@@ -9,7 +9,7 @@ from src.config import config
 # https://developers.notion.com/docs/uploading-small-files
 NOTION_SUPPORTED_EXTENSIONS: Set[str] = {
     # Audio
-    '.aac', '.adts', '.mid', '.midi', '.mp3', '.mpga', '.m4a', '.m4b', '.mp4', '.oga', '.ogg', '.wav', '.wma',
+    '.aac', '.adts', '.mid', '.midi', '.mp3', '.mpga', '.m4a', '.m4b', '.oga', '.ogg', '.wav', '.wma',
     # Document
     '.pdf', '.txt', '.json', '.doc', '.dot', '.docx', '.dotx', '.xls', '.xlt', '.xla', '.xlsx', '.xltx',
     '.ppt', '.pot', '.pps', '.ppa', '.pptx', '.potx',
