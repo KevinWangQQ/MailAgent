@@ -110,7 +110,7 @@ class EventHandlers:
         ai_review_status = props.get("ai_review_status", "")
 
         # 如果 AI Review 已完成，走 ai_reviewed 流程
-        if ai_review_status == "Reviewed":
+        if ai_review_status == "AI Reviewed":
             await self.handle_ai_reviewed(event)
 
         # 始终检查 flag 变化

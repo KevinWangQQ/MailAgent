@@ -77,9 +77,9 @@ def parse_properties(raw_props: Dict[str, Any]) -> Dict[str, Any]:
         "Date": ("date", _extract_date),
         "Is Read": ("is_read", _extract_checkbox),
         "Is Flagged": ("is_flagged", _extract_checkbox),
-        "AI Action": ("ai_action", _extract_select),
-        "AI Priority": ("ai_priority", _extract_select),
-        "AI Review Status": ("ai_review_status", _extract_select),
+        "Action Type": ("ai_action", _extract_select),
+        "Priority": ("ai_priority", _extract_select),
+        "Processing Status": ("ai_review_status", _extract_select),
         "Mailbox": ("mailbox", _extract_select),
     }
 

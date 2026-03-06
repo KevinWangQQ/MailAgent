@@ -1008,7 +1008,7 @@ class NotionSync:
         """查询需要反向同步的页面
 
         条件:
-        - AI Review Status = 'Reviewed'
+        - Processing Status = 'AI Reviewed'
         - Synced to Mail = False (checkbox)
 
         Returns:
@@ -1022,8 +1022,8 @@ class NotionSync:
             filter_conditions = {
                 "and": [
                     {
-                        "property": "AI Review Status",
-                        "select": {"equals": "Reviewed"}
+                        "property": "Processing Status",
+                        "select": {"equals": "AI Reviewed"}
                     },
                     {
                         "property": "Synced to Mail",
@@ -1056,7 +1056,7 @@ class NotionSync:
                     message_id = message_id_texts[0].get("text", {}).get("content", "") if message_id_texts else ""
 
                     # 提取 AI Action
-                    ai_action_prop = props.get("AI Action", {})
+                    ai_action_prop = props.get("Action Type", {})
                     ai_action = ai_action_prop.get("select", {})
                     ai_action_name = ai_action.get("name", "") if ai_action else ""
 
@@ -1085,7 +1085,7 @@ class NotionSync:
 
                     # 提取 AI Priority (select, 可能不存在)
                     ai_priority = ""
-                    ai_priority_prop = props.get("AI Priority", {})
+                    ai_priority_prop = props.get("Priority", {})
                     ai_priority_sel = ai_priority_prop.get("select")
                     if ai_priority_sel:
                         ai_priority = ai_priority_sel.get("name", "")
