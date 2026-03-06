@@ -1,19 +1,13 @@
 module.exports = {
   apps: [{
     name: 'mailagent-webhook',
-    script: 'app.py',
-    interpreter: 'python3',
-    interpreter_args: '-m uvicorn app:app --host 127.0.0.1 --port 8100',
-    script: './',
+    script: 'start.py',
+    interpreter: './venv/bin/python3.9',
+    cwd: '/home/lighthouse/MailAgent/webhook-server',
     instances: 1,
     exec_mode: 'fork',
     watch: false,
     max_memory_restart: '500M',
-    env: {
-      REDIS_URL: 'redis://localhost:6379',
-      REDIS_DB: '2',
-      WEBHOOK_SECRET: '',
-    },
     error_file: './logs/pm2-error.log',
     out_file: './logs/pm2-out.log',
     time: true,
