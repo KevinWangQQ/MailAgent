@@ -126,6 +126,7 @@ class NewWatcher:
             "meeting_invites": 0,  # 检测到的会议邀请
             "retries_attempted": 0,
             "retries_succeeded": 0,
+            "flag_changes_synced": 0,
             "errors": 0,
             "consecutive_errors": 0  # 连续错误计数
         }
@@ -268,6 +269,9 @@ class NewWatcher:
 
         # 6. 处理重试队列（fetch_failed 和 failed 状态）
         await self._process_retry_queue()
+
+        # 7. 检测 read/flagged 变化并同步到 Notion
+        await self._detect_and_sync_flag_changes()
 
     async def _process_pending_emails(self):
         """处理 pending 状态的邮件（v3 架构）
@@ -510,6 +514,68 @@ class NewWatcher:
             except Exception as e:
                 logger.error(f"Retry failed for {internal_id}: {e}")
                 self.sync_store.mark_failed_v3(internal_id, str(e))
+
+    async def _detect_and_sync_flag_changes(self):
+        """检测 Mail.app 中邮件 read/flagged 变化并同步到 Notion
+
+        流程：
+        1. 从 Mail.app SQLite 查询最近 1000 封邮件的 read/flagged
+        2. 与 SyncStore 存储的值对比
+        3. 有变化的更新 Notion 页面 + SyncStore
+        """
+        if not self.radar or not self.radar.is_available():
+            return
+
+        try:
+            # 1. 查询 Mail.app 当前 flags
+            current_flags = self.radar.get_recent_flags(limit=1000)
+            if not current_flags:
+                return
+
+            # 2. 从 SyncStore 获取已同步邮件的存储 flags
+            stored_flags = self.sync_store.get_synced_flags(list(current_flags.keys()))
+            if not stored_flags:
+                return
+
+            # 3. 对比找出变化
+            changes = []
+            for iid, current in current_flags.items():
+                stored = stored_flags.get(iid)
+                if not stored:
+                    continue
+                if current['is_read'] != stored['is_read'] or current['is_flagged'] != stored['is_flagged']:
+                    changes.append({
+                        'internal_id': iid,
+                        'is_read': current['is_read'],
+                        'is_flagged': current['is_flagged'],
+                        'notion_page_id': stored['notion_page_id'],
+                    })
+
+            if not changes:
+                return
+
+            logger.info(f"Detected {len(changes)} flag changes, syncing to Notion...")
+
+            # 4. 批量更新 Notion + SyncStore（每周期最多 10 个，避免阻塞）
+            for change in changes[:10]:
+                try:
+                    await self.notion_sync.update_email_flags(
+                        change['notion_page_id'],
+                        change['is_read'],
+                        change['is_flagged']
+                    )
+                    self.sync_store.update_local_flags(
+                        change['internal_id'],
+                        change['is_read'],
+                        change['is_flagged']
+                    )
+                    self._stats["flag_changes_synced"] += 1
+                    logger.debug(f"Flag synced: {change['internal_id']} read={change['is_read']} flagged={change['is_flagged']}")
+                except Exception as e:
+                    logger.error(f"Failed to sync flags for {change['internal_id']}: {e}")
+
+        except Exception as e:
+            logger.error(f"Flag change detection failed: {e}")
 
     def get_stats(self) -> Dict[str, Any]:
         """获取统计信息"""

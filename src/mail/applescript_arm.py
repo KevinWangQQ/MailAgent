@@ -453,6 +453,86 @@ class AppleScriptArm:
 
         return success
 
+    def mark_as_read_by_id(self, internal_id: int, read: bool = True, mailbox: str = None) -> bool:
+        """通过 internal_id 标记邮件已读/未读（快速，~1s）
+
+        Args:
+            internal_id: 邮件内部 id（= SQLite ROWID）
+            read: True 标记已读，False 标记未读
+            mailbox: 邮箱名称
+
+        Returns:
+            操作是否成功
+        """
+        read_str = "true" if read else "false"
+        mailbox_name = self._get_mailbox_name(mailbox)
+
+        script = f'''
+        tell application "Mail"
+            tell account "{self._escape_for_applescript(self.account_name)}"
+                tell mailbox "{self._escape_for_applescript(mailbox_name)}"
+                    try
+                        set theMessage to first message whose id is {internal_id}
+                        set read status of theMessage to {read_str}
+                        return "OK"
+                    on error errMsg
+                        return "ERROR: " & errMsg
+                    end try
+                end tell
+            end tell
+        end tell
+        '''
+
+        result = self._execute_script(script, timeout=30)
+        success = result is not None and "OK" in result
+
+        if success:
+            logger.debug(f"mark_as_read_by_id: id={internal_id}, read={read}")
+        else:
+            logger.error(f"mark_as_read_by_id failed: id={internal_id}, result={result}")
+
+        return success
+
+    def set_flag_by_id(self, internal_id: int, flagged: bool = True, mailbox: str = None) -> bool:
+        """通过 internal_id 设置/取消旗标（快速，~1s）
+
+        Args:
+            internal_id: 邮件内部 id（= SQLite ROWID）
+            flagged: True 设置旗标，False 取消旗标
+            mailbox: 邮箱名称
+
+        Returns:
+            操作是否成功
+        """
+        flag_str = "true" if flagged else "false"
+        mailbox_name = self._get_mailbox_name(mailbox)
+
+        script = f'''
+        tell application "Mail"
+            tell account "{self._escape_for_applescript(self.account_name)}"
+                tell mailbox "{self._escape_for_applescript(mailbox_name)}"
+                    try
+                        set theMessage to first message whose id is {internal_id}
+                        set flagged status of theMessage to {flag_str}
+                        return "OK"
+                    on error errMsg
+                        return "ERROR: " & errMsg
+                    end try
+                end tell
+            end tell
+        end tell
+        '''
+
+        result = self._execute_script(script, timeout=30)
+        success = result is not None and "OK" in result
+
+        if success:
+            logger.debug(f"set_flag_by_id: id={internal_id}, flagged={flagged}")
+        else:
+            logger.error(f"set_flag_by_id failed: id={internal_id}, result={result}")
+
+        return success
+
     def _execute_script(self, script: str, timeout: int = 120) -> Optional[str]:
         """
         执行 AppleScript 并返回结果

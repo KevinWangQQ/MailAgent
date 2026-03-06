@@ -328,6 +328,52 @@ class SQLiteRadar:
             logger.error(f"Failed to get new emails: {e}")
             return []
 
+    def get_recent_flags(self, limit: int = 1000) -> Dict[int, Dict]:
+        """获取最近 N 封邮件的 read/flagged 状态
+
+        用于 flag 变化检测：与 SyncStore 中存储的值对比。
+
+        Args:
+            limit: 查询邮件数量（按 ROWID 倒序取最近 N 封）
+
+        Returns:
+            {internal_id: {'is_read': bool, 'is_flagged': bool}}
+        """
+        if not self.db_path:
+            return {}
+
+        try:
+            with self._connection() as conn:
+                cursor = conn.cursor()
+                mailbox_filter = self._build_mailbox_filter()
+
+                query = f"""
+                    SELECT m.ROWID as internal_id,
+                           m.read as is_read,
+                           m.flagged as is_flagged
+                    FROM messages m
+                    LEFT JOIN mailboxes mb ON m.mailbox = mb.ROWID
+                    WHERE m.deleted = 0
+                      AND {mailbox_filter}
+                    ORDER BY m.ROWID DESC
+                    LIMIT ?
+                """
+
+                cursor.execute(query, (limit,))
+                result = {}
+                for row in cursor.fetchall():
+                    result[row['internal_id']] = {
+                        'is_read': bool(row['is_read']),
+                        'is_flagged': bool(row['is_flagged']),
+                    }
+
+                logger.debug(f"get_recent_flags: queried {len(result)} emails")
+                return result
+
+        except Exception as e:
+            logger.error(f"Failed to get recent flags: {e}")
+            return {}
+
     def _parse_mailbox_url(self, url: str) -> str:
         """解析 mailbox URL 提取中文邮箱名称
 

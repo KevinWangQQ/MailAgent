@@ -8,6 +8,9 @@
 - 邮件内容、附件、线程关系同步
 - 自动识别邮件中的会议邀请（iCalendar）并创建日程
 - AI 分类与处理（通过 Notion）
+- 双向 Flag 同步（已读/旗标状态 Mail.app ↔ Notion）
+- 飞书机器人通知（重要邮件推送）
+- Notion Webhook → Redis → Mail.app 实时事件驱动
 
 **架构版本：v3 SQLite-First**（2026-01 优化）
 - 使用 `internal_id`（SQLite ROWID = AppleScript id）作为主键
@@ -21,6 +24,8 @@
 - Notion API（notion-client）
 - BeautifulSoup/lxml（HTML 解析）
 - Pydantic（配置管理）
+- Redis（Notion→Mail 事件队列）
+- FastAPI（Webhook Server）
 
 ## 命令速查
 
@@ -114,7 +119,28 @@ tail -f logs/sync.log
 | `meeting_sync.py` | 会议邀请检测与同步 |
 | `icalendar_parser.py` | iCalendar 解析器 |
 | `health_check.py` | 健康检查（发现遗漏邮件） |
-| `reverse_sync.py` | 反向同步（Notion → Mail.app） |
+| `reverse_sync.py` | 反向同步（Notion → Mail.app + 飞书通知） |
+
+#### 通知模块 (`src/notify/`)
+
+| 模块 | 职责 |
+|------|------|
+| `feishu.py` | 飞书自定义机器人通知（交互式卡片消息，HMAC-SHA256 签名） |
+
+#### 事件模块 (`src/events/`)
+
+| 模块 | 职责 |
+|------|------|
+| `redis_consumer.py` | Redis BLPOP 队列消费者（自动重连） |
+| `handlers.py` | Webhook 事件处理器（flag_changed / ai_reviewed / page_updated） |
+
+#### Webhook Server (`webhook-server/`)
+
+| 模块 | 职责 |
+|------|------|
+| `app.py` | FastAPI 服务，接收 Notion Automation webhook → Redis 队列路由 |
+| `ecosystem.config.js` | PM2 进程配置（端口 8100） |
+| `deploy.md` | 服务器部署指南 |
 
 #### Notion 模块 (`src/notion/`)
 
@@ -352,6 +378,22 @@ CREATE TABLE thread_head_cache (
 | `INIT_BATCH_SIZE` | `100` | 初始化每批获取数量 |
 | `APPLESCRIPT_TIMEOUT` | `200` | 超时时间（秒） |
 
+### 飞书通知配置
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `FEISHU_WEBHOOK_URL` | `""` | 飞书自定义机器人 webhook URL |
+| `FEISHU_WEBHOOK_SECRET` | `""` | 签名密钥（可选） |
+| `FEISHU_NOTIFY_ENABLED` | `false` | 是否启用飞书通知 |
+
+### Redis 事件消费配置
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `REDIS_URL` | `""` | Redis 连接 URL |
+| `REDIS_DB` | `2` | Redis DB 号（MailAgent 专用） |
+| `REDIS_EVENTS_ENABLED` | `false` | 是否启用 Redis 事件消费 |
+
 ## Notion 数据库结构
 
 ### 邮件数据库
@@ -366,6 +408,9 @@ CREATE TABLE thread_head_cache (
 - `Parent Item` (Relation to self) - 线程头
 - `Mailbox` (Select)
 - `Is Read`, `Is Flagged`, `Has Attachments` (Checkbox)
+- `AI Action` (Select) - AI 处理动作
+- `AI Priority` (Select) - AI 优先级（Critical/Urgent/Important/Normal/Low）
+- `AI Review Status` (Select) - AI 审核状态（Pending/Reviewed）
 
 ### 日历数据库
 
@@ -420,6 +465,7 @@ python3 scripts/test_mail_reader.py
 - **临时附件**: `/tmp/email-notion-sync/{md5}/`
 - **配置**: `.env`
 - **优化文档**: `docs/applescript_id_optimization.md`
+- **Webhook Server**: `webhook-server/`（独立部署，见 `webhook-server/deploy.md`）
 
 ## 关于 calendar_main.py
 

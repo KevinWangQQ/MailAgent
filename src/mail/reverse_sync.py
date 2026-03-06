@@ -1,84 +1,70 @@
 """
 反向同步模块: Notion -> Mail.app
 
-当 AI 审核完邮件后，将操作同步回 Mail.app。
+当 AI 审核完邮件后，将操作同步回 Mail.app，并对重要邮件发送飞书通知。
 支持的操作:
 - Mark Read: 标记已读
 - Flag Important: 设置旗标
 - Mark Read and Flag: 标记已读并设置旗标
 - Archive: 归档（当前实现为标记已读）
-
-Usage:
-    from src.mail.reverse_sync import NotionToMailSync
-    from src.notion.sync import NotionSync
-    from src.mail.applescript_arm import AppleScriptArm
-
-    # 初始化
-    reverse_sync = NotionToMailSync()
-
-    # 或者使用自定义组件
-    notion_sync = NotionSync()
-    arm = AppleScriptArm(account_name="Exchange", inbox_name="收件箱")
-    reverse_sync = NotionToMailSync(notion_sync=notion_sync, arm=arm)
-
-    # 检查并同步
-    stats = await reverse_sync.check_and_sync()
-    print(f"Synced: {stats['synced']}, Failed: {stats['failed']}")
 """
 
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 from loguru import logger
 
 from src.mail.applescript_arm import AppleScriptArm
+from src.mail.sync_store import SyncStore
 from src.notion.sync import NotionSync
+from src.config import config
 
 
 class NotionToMailSync:
-    """反向同步: Notion -> Mail.app
+    """反向同步: Notion -> Mail.app"""
 
-    当 AI 审核完邮件后，将操作同步回 Mail.app
-    """
-
-    # 支持的 AI Action 类型
     ACTION_MARK_READ = "Mark Read"
     ACTION_FLAG_IMPORTANT = "Flag Important"
     ACTION_MARK_READ_AND_FLAG = "Mark Read and Flag"
     ACTION_ARCHIVE = "Archive"
 
+    # 需要飞书通知的 AI Action（包含 Flag 的动作表示重要）
+    NOTIFY_ACTIONS = {ACTION_FLAG_IMPORTANT, ACTION_MARK_READ_AND_FLAG}
+
     def __init__(
         self,
         notion_sync: NotionSync = None,
-        arm: AppleScriptArm = None
+        arm: AppleScriptArm = None,
+        sync_store: SyncStore = None
     ):
-        """初始化反向同步器
-
-        Args:
-            notion_sync: NotionSync 实例，用于查询和更新 Notion 页面
-            arm: AppleScriptArm 实例，用于操作 Mail.app
-        """
         self.notion_sync = notion_sync or NotionSync()
         self.arm = arm or AppleScriptArm()
+        self.sync_store = sync_store
         self.last_check: Optional[datetime] = None
         self.sync_count = 0
         self.error_count = 0
+        self.notify_count = 0
+
+        # 飞书通知器（延迟初始化）
+        self._feishu = None
+        if config.feishu_notify_enabled and config.feishu_webhook_url:
+            from src.notify.feishu import FeishuNotifier
+            self._feishu = FeishuNotifier(
+                webhook_url=config.feishu_webhook_url,
+                secret=config.feishu_webhook_secret
+            )
+            logger.info("Feishu notification enabled")
 
         logger.info("NotionToMailSync initialized")
 
+    async def close(self):
+        if self._feishu:
+            await self._feishu.close()
+
     async def check_and_sync(self) -> Dict[str, int]:
-        """检查 Notion 状态变更并同步到 Mail.app
-
-        查询条件:
-        - AI Review Status = "Reviewed"
-        - Synced to Mail = False
-
-        Returns:
-            统计信息: {synced: int, failed: int, skipped: int}
-        """
-        stats = {"synced": 0, "failed": 0, "skipped": 0}
+        """检查 Notion 状态变更并同步到 Mail.app"""
+        stats = {"synced": 0, "failed": 0, "skipped": 0, "notified": 0}
 
         try:
-            # 查询需要处理的页面
             pages = await self.notion_sync.query_pages_for_reverse_sync()
 
             if not pages:
@@ -93,22 +79,22 @@ class NotionToMailSync:
                     success = await self.sync_single_page(page)
                     if success:
                         stats["synced"] += 1
+                        # 飞书通知
+                        if await self._try_notify(page):
+                            stats["notified"] += 1
                     else:
                         stats["skipped"] += 1
                 except Exception as e:
-                    page_id = page.get("page_id", "unknown")
-                    logger.error(f"Failed to sync page {page_id}: {e}")
+                    logger.error(f"Failed to sync page {page.get('page_id', '?')}: {e}")
                     stats["failed"] += 1
 
-            # 更新统计
             self.sync_count += stats["synced"]
             self.error_count += stats["failed"]
+            self.notify_count += stats["notified"]
 
             logger.info(
-                f"Reverse sync completed: "
-                f"synced={stats['synced']}, "
-                f"failed={stats['failed']}, "
-                f"skipped={stats['skipped']}"
+                f"Reverse sync: synced={stats['synced']}, "
+                f"failed={stats['failed']}, notified={stats['notified']}"
             )
 
         except Exception as e:
@@ -118,135 +104,136 @@ class NotionToMailSync:
         return stats
 
     async def sync_single_page(self, page: Dict) -> bool:
-        """同步单个 Notion 页面到 Mail.app
-
-        Args:
-            page: 包含 page_id, message_id, ai_action 的字典
-
-        Returns:
-            是否成功
-        """
+        """同步单个 Notion 页面到 Mail.app"""
         page_id = page.get("page_id")
         message_id = page.get("message_id")
         ai_action = page.get("ai_action")
+        mailbox = page.get("mailbox") or None
 
-        # 验证 message_id
         if not message_id:
             logger.warning(f"Page {page_id} has no Message ID, skipping")
             return False
 
-        # 截断 message_id 用于日志显示
-        message_id_short = message_id[:40] + "..." if len(message_id) > 40 else message_id
+        msg_short = message_id[:40] + "..." if len(message_id) > 40 else message_id
+        logger.info(f"Syncing to Mail: {msg_short} action={ai_action}")
 
-        logger.info(f"Syncing to Mail: {message_id_short} action={ai_action}")
+        # 查找 internal_id（优先快速路径）
+        internal_id = self._lookup_internal_id(message_id)
 
         success = False
-
-        # 根据 AI Action 执行对应操作
         if ai_action == self.ACTION_MARK_READ:
-            success = self._execute_mark_read(message_id)
-
+            success = self._do_mark_read(internal_id, message_id, mailbox)
         elif ai_action == self.ACTION_FLAG_IMPORTANT:
-            success = self._execute_flag(message_id)
-
+            success = self._do_flag(internal_id, message_id, mailbox)
         elif ai_action == self.ACTION_MARK_READ_AND_FLAG:
-            success = self._execute_mark_read_and_flag(message_id)
-
+            success = self._do_mark_read_and_flag(internal_id, message_id, mailbox)
         elif ai_action == self.ACTION_ARCHIVE:
-            # 暂时只标记已读，Archive 功能可后续添加
-            success = self._execute_mark_read(message_id)
-            if success:
-                logger.info("Archive action: marked as read (move not implemented)")
-
+            success = self._do_mark_read(internal_id, message_id, mailbox)
         else:
-            # 未知操作或空操作: 默认标记已读
             if ai_action:
                 logger.warning(f"Unknown action '{ai_action}', defaulting to mark as read")
-            success = self._execute_mark_read(message_id)
+            success = self._do_mark_read(internal_id, message_id, mailbox)
 
-        # 更新 Notion 状态
         if success:
+            # Echo prevention: 更新 SyncStore 的 flags 使其与 Mail.app 一致
+            # 这样 flag 变化检测不会误报刚被 reverse sync 修改的邮件
+            self._update_store_flags(internal_id, ai_action)
+
             try:
                 await self.notion_sync.update_page_mail_sync_status(page_id, synced=True)
-                logger.info(f"Reverse sync completed for {message_id_short}")
+                logger.info(f"Reverse sync completed for {msg_short}")
             except Exception as e:
                 logger.error(f"Failed to update Notion sync status: {e}")
-                # 虽然 Notion 更新失败，但 Mail.app 操作已成功
-                # 返回 False 以便下次重试
                 return False
         else:
-            logger.error(f"Failed to execute action on Mail.app: {message_id_short}")
+            logger.error(f"Failed to execute action on Mail.app: {msg_short}")
 
         return success
 
-    def _execute_mark_read(self, message_id: str) -> bool:
-        """执行标记已读操作
-
-        Args:
-            message_id: 邮件的 Message-ID
-
-        Returns:
-            是否成功
-        """
+    def _lookup_internal_id(self, message_id: str) -> Optional[int]:
+        """从 SyncStore 查找 internal_id"""
+        if not self.sync_store:
+            return None
         try:
-            return self.arm.mark_as_read(message_id, True)
+            record = self.sync_store.get_by_message_id(message_id)
+            if record:
+                return record.internal_id if hasattr(record, 'internal_id') else record.get('internal_id')
+        except Exception:
+            pass
+        return None
+
+    def _do_mark_read(self, internal_id: Optional[int], message_id: str, mailbox: str = None) -> bool:
+        try:
+            if internal_id:
+                return self.arm.mark_as_read_by_id(internal_id, True, mailbox)
+            return self.arm.mark_as_read(message_id, True, mailbox)
         except Exception as e:
             logger.error(f"mark_as_read failed: {e}")
             return False
 
-    def _execute_flag(self, message_id: str) -> bool:
-        """执行设置旗标操作
-
-        Args:
-            message_id: 邮件的 Message-ID
-
-        Returns:
-            是否成功
-        """
+    def _do_flag(self, internal_id: Optional[int], message_id: str, mailbox: str = None) -> bool:
         try:
-            return self.arm.set_flag(message_id, True)
+            if internal_id:
+                return self.arm.set_flag_by_id(internal_id, True, mailbox)
+            return self.arm.set_flag(message_id, True, mailbox)
         except Exception as e:
             logger.error(f"set_flag failed: {e}")
             return False
 
-    def _execute_mark_read_and_flag(self, message_id: str) -> bool:
-        """执行标记已读并设置旗标操作
-
-        Args:
-            message_id: 邮件的 Message-ID
-
-        Returns:
-            是否成功（两个操作都成功才返回 True）
-        """
+    def _do_mark_read_and_flag(self, internal_id: Optional[int], message_id: str, mailbox: str = None) -> bool:
         try:
-            read_success = self.arm.mark_as_read(message_id, True)
-            if not read_success:
-                logger.warning("mark_as_read failed, skipping set_flag")
+            if not self._do_mark_read(internal_id, message_id, mailbox):
                 return False
-
-            flag_success = self.arm.set_flag(message_id, True)
-            return flag_success
+            return self._do_flag(internal_id, message_id, mailbox)
         except Exception as e:
             logger.error(f"mark_read_and_flag failed: {e}")
             return False
 
-    def get_stats(self) -> Dict:
-        """获取同步统计
+    async def _try_notify(self, page: Dict) -> bool:
+        """检查是否需要发送飞书通知并发送"""
+        if not self._feishu:
+            return False
 
-        Returns:
-            统计信息字典:
-            - last_check: 上次检查时间 (ISO format)
-            - total_synced: 总成功同步数
-            - total_errors: 总错误数
-        """
+        ai_action = page.get("ai_action", "")
+        ai_priority = page.get("ai_priority", "")
+
+        # 触发条件：AI Action 包含 Flag，或 AI Priority 为 Important/Critical/Urgent
+        should_notify = (
+            ai_action in self.NOTIFY_ACTIONS
+            or ai_priority in ("Important", "Critical", "Urgent")
+        )
+
+        if not should_notify:
+            return False
+
+        return await self._feishu.notify_important_email(page)
+
+    def _update_store_flags(self, internal_id: Optional[int], ai_action: str):
+        """Echo prevention: 反向同步后更新 SyncStore flags 使其与 Mail.app 一致"""
+        if not self.sync_store or not internal_id:
+            return
+
+        try:
+            record = self.sync_store.get(internal_id)
+            if not record:
+                return
+
+            is_read = record.get('is_read', False) if isinstance(record, dict) else getattr(record, 'is_read', False)
+            is_flagged = record.get('is_flagged', False) if isinstance(record, dict) else getattr(record, 'is_flagged', False)
+
+            if ai_action in (self.ACTION_MARK_READ, self.ACTION_MARK_READ_AND_FLAG, self.ACTION_ARCHIVE):
+                is_read = True
+            if ai_action in (self.ACTION_FLAG_IMPORTANT, self.ACTION_MARK_READ_AND_FLAG):
+                is_flagged = True
+
+            self.sync_store.update_local_flags(internal_id, bool(is_read), bool(is_flagged))
+        except Exception as e:
+            logger.warning(f"Failed to update store flags for echo prevention: {e}")
+
+    def get_stats(self) -> Dict:
         return {
             "last_check": self.last_check.isoformat() if self.last_check else None,
             "total_synced": self.sync_count,
-            "total_errors": self.error_count
+            "total_errors": self.error_count,
+            "total_notified": self.notify_count,
         }
-
-    def reset_stats(self):
-        """重置统计计数器"""
-        self.sync_count = 0
-        self.error_count = 0
-        logger.info("Reverse sync stats reset")

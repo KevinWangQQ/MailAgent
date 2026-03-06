@@ -1351,6 +1351,58 @@ class SyncStore:
 
     # ==================== 统计和维护 ====================
 
+    def get_synced_flags(self, internal_ids: List[int]) -> Dict[int, Dict]:
+        """批量获取已同步邮件的存储 flags 和 notion_page_id
+
+        Args:
+            internal_ids: 要查询的 internal_id 列表
+
+        Returns:
+            {internal_id: {'is_read': bool, 'is_flagged': bool, 'notion_page_id': str}}
+        """
+        if not internal_ids:
+            return {}
+
+        result = {}
+        with self._connection() as conn:
+            cursor = conn.cursor()
+            # 分批查询避免 SQL 参数过多
+            batch_size = 500
+            for i in range(0, len(internal_ids), batch_size):
+                batch = internal_ids[i:i + batch_size]
+                placeholders = ','.join('?' * len(batch))
+                cursor.execute(f"""
+                    SELECT internal_id, is_read, is_flagged, notion_page_id
+                    FROM email_metadata
+                    WHERE internal_id IN ({placeholders})
+                      AND sync_status = 'synced'
+                      AND notion_page_id IS NOT NULL
+                """, batch)
+                for row in cursor.fetchall():
+                    result[row[0]] = {
+                        'is_read': bool(row[1]),
+                        'is_flagged': bool(row[2]),
+                        'notion_page_id': row[3],
+                    }
+        return result
+
+    def update_local_flags(self, internal_id: int, is_read: bool, is_flagged: bool):
+        """更新本地存储的 read/flagged 状态（不触发 Notion 同步）
+
+        Args:
+            internal_id: 邮件 internal_id
+            is_read: 新的已读状态
+            is_flagged: 新的旗标状态
+        """
+        with self._connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE email_metadata
+                SET is_read = ?, is_flagged = ?, updated_at = ?
+                WHERE internal_id = ?
+            """, (1 if is_read else 0, 1 if is_flagged else 0, time.time(), internal_id))
+            conn.commit()
+
     def get_stats(self) -> SyncStoreStats:
         """获取同步统计信息"""
         with self._connection() as conn:

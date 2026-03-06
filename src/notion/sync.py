@@ -1060,10 +1060,53 @@ class NotionSync:
                     ai_action = ai_action_prop.get("select", {})
                     ai_action_name = ai_action.get("name", "") if ai_action else ""
 
+                    # 提取 Subject (title)
+                    subject_prop = props.get("Subject", {})
+                    subject_titles = subject_prop.get("title", [])
+                    subject = subject_titles[0].get("text", {}).get("content", "") if subject_titles else ""
+
+                    # 提取 From Name / From
+                    from_name = ""
+                    from_name_prop = props.get("From Name", {})
+                    from_name_texts = from_name_prop.get("rich_text", [])
+                    if from_name_texts:
+                        from_name = from_name_texts[0].get("text", {}).get("content", "")
+
+                    from_email = ""
+                    from_prop = props.get("From", {})
+                    from_email = from_prop.get("email", "") or ""
+
+                    # 提取 Date
+                    date_str = ""
+                    date_prop = props.get("Date", {})
+                    date_val = date_prop.get("date")
+                    if date_val:
+                        date_str = date_val.get("start", "")
+
+                    # 提取 AI Priority (select, 可能不存在)
+                    ai_priority = ""
+                    ai_priority_prop = props.get("AI Priority", {})
+                    ai_priority_sel = ai_priority_prop.get("select")
+                    if ai_priority_sel:
+                        ai_priority = ai_priority_sel.get("name", "")
+
+                    # 提取 Mailbox (select)
+                    mailbox = ""
+                    mailbox_prop = props.get("Mailbox", {})
+                    mailbox_sel = mailbox_prop.get("select")
+                    if mailbox_sel:
+                        mailbox = mailbox_sel.get("name", "")
+
                     pages.append({
                         "page_id": page["id"],
                         "message_id": message_id,
-                        "ai_action": ai_action_name
+                        "ai_action": ai_action_name,
+                        "subject": subject,
+                        "from_name": from_name,
+                        "from_email": from_email,
+                        "date": date_str,
+                        "ai_priority": ai_priority,
+                        "mailbox": mailbox,
                     })
 
                 has_more = results.get("has_more", False)
@@ -1103,6 +1146,36 @@ class NotionSync:
 
         except Exception as e:
             logger.error(f"Failed to update mail sync status for {page_id}: {e}")
+            raise
+
+    async def update_email_flags(
+        self,
+        page_id: str,
+        is_read: bool,
+        is_flagged: bool
+    ):
+        """更新邮件的 Is Read / Is Flagged 状态到 Notion
+
+        Args:
+            page_id: Notion 页面 ID
+            is_read: 是否已读
+            is_flagged: 是否标旗
+        """
+        try:
+            properties = {
+                "Is Read": {"checkbox": is_read},
+                "Is Flagged": {"checkbox": is_flagged},
+            }
+
+            await self.client.client.pages.update(
+                page_id=page_id,
+                properties=properties
+            )
+
+            logger.debug(f"Flags updated for {page_id}: read={is_read}, flagged={is_flagged}")
+
+        except Exception as e:
+            logger.error(f"Failed to update flags for {page_id}: {e}")
             raise
 
     async def query_by_row_id(self, row_id: int) -> Optional[Dict]:
