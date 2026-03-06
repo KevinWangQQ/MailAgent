@@ -1,12 +1,11 @@
 """
 反向同步模块: Notion -> Mail.app
 
-当 AI 审核完邮件后，将操作同步回 Mail.app，并对重要邮件发送飞书通知。
-支持的操作:
-- Mark Read: 标记已读
-- Flag Important: 设置旗标
-- Mark Read and Flag: 标记已读并设置旗标
-- Archive: 归档（当前实现为标记已读）
+当 AI 审核完邮件后，根据 Action Type 同步操作到 Mail.app，并对重要邮件发送飞书通知。
+
+Action Type → Mail.app 操作映射:
+- 需要回复/需要决策/需要Review/需要会议/需要跟进/等待响应 → 设置旗标
+- 仅供参考/已完结 → 标记已读
 """
 
 from datetime import datetime
@@ -22,13 +21,13 @@ from src.config import config
 class NotionToMailSync:
     """反向同步: Notion -> Mail.app"""
 
-    ACTION_MARK_READ = "Mark Read"
-    ACTION_FLAG_IMPORTANT = "Flag Important"
-    ACTION_MARK_READ_AND_FLAG = "Mark Read and Flag"
-    ACTION_ARCHIVE = "Archive"
+    # Action Type → Mail.app 操作映射
+    FLAG_ACTIONS = {"需要回复", "需要决策", "需要Review", "需要会议", "需要跟进", "等待响应"}
+    READ_ACTIONS = {"仅供参考", "已完结"}
 
-    # 需要飞书通知的 AI Action（包含 Flag 的动作表示重要）
-    NOTIFY_ACTIONS = {ACTION_FLAG_IMPORTANT, ACTION_MARK_READ_AND_FLAG}
+    # 飞书通知触发条件
+    NOTIFY_ACTIONS = {"需要回复", "需要决策"}
+    NOTIFY_PRIORITIES = {"🔴 紧急", "🟡 重要"}
 
     def __init__(
         self,
@@ -44,7 +43,6 @@ class NotionToMailSync:
         self.error_count = 0
         self.notify_count = 0
 
-        # 飞书通知器（延迟初始化）
         self._feishu = None
         if config.feishu_notify_enabled and config.feishu_webhook_url:
             from src.notify.feishu import FeishuNotifier
@@ -79,7 +77,6 @@ class NotionToMailSync:
                     success = await self.sync_single_page(page)
                     if success:
                         stats["synced"] += 1
-                        # 飞书通知
                         if await self._try_notify(page):
                             stats["notified"] += 1
                     else:
@@ -107,7 +104,7 @@ class NotionToMailSync:
         """同步单个 Notion 页面到 Mail.app"""
         page_id = page.get("page_id")
         message_id = page.get("message_id")
-        ai_action = page.get("ai_action")
+        ai_action = page.get("ai_action", "")
         mailbox = page.get("mailbox") or None
 
         if not message_id:
@@ -117,28 +114,21 @@ class NotionToMailSync:
         msg_short = message_id[:40] + "..." if len(message_id) > 40 else message_id
         logger.info(f"Syncing to Mail: {msg_short} action={ai_action}")
 
-        # 查找 internal_id（优先快速路径）
         internal_id = self._lookup_internal_id(message_id)
 
-        success = False
-        if ai_action == self.ACTION_MARK_READ:
-            success = self._do_mark_read(internal_id, message_id, mailbox)
-        elif ai_action == self.ACTION_FLAG_IMPORTANT:
-            success = self._do_flag(internal_id, message_id, mailbox)
-        elif ai_action == self.ACTION_MARK_READ_AND_FLAG:
+        # 根据 Action Type 决定操作
+        if ai_action in self.FLAG_ACTIONS:
             success = self._do_mark_read_and_flag(internal_id, message_id, mailbox)
-        elif ai_action == self.ACTION_ARCHIVE:
+        elif ai_action in self.READ_ACTIONS:
             success = self._do_mark_read(internal_id, message_id, mailbox)
         else:
+            # 未知 action 默认标记已读
             if ai_action:
                 logger.warning(f"Unknown action '{ai_action}', defaulting to mark as read")
             success = self._do_mark_read(internal_id, message_id, mailbox)
 
         if success:
-            # Echo prevention: 更新 SyncStore 的 flags 使其与 Mail.app 一致
-            # 这样 flag 变化检测不会误报刚被 reverse sync 修改的邮件
             self._update_store_flags(internal_id, ai_action)
-
             try:
                 await self.notion_sync.update_page_mail_sync_status(page_id, synced=True)
                 logger.info(f"Reverse sync completed for {msg_short}")
@@ -151,7 +141,6 @@ class NotionToMailSync:
         return success
 
     def _lookup_internal_id(self, message_id: str) -> Optional[int]:
-        """从 SyncStore 查找 internal_id"""
         if not self.sync_store:
             return None
         try:
@@ -190,17 +179,15 @@ class NotionToMailSync:
             return False
 
     async def _try_notify(self, page: Dict) -> bool:
-        """检查是否需要发送飞书通知并发送"""
         if not self._feishu:
             return False
 
         ai_action = page.get("ai_action", "")
         ai_priority = page.get("ai_priority", "")
 
-        # 触发条件：AI Action 包含 Flag，或 AI Priority 为 Important/Critical/Urgent
         should_notify = (
             ai_action in self.NOTIFY_ACTIONS
-            or ai_priority in ("Important", "Critical", "Urgent")
+            or ai_priority in self.NOTIFY_PRIORITIES
         )
 
         if not should_notify:
@@ -209,7 +196,7 @@ class NotionToMailSync:
         return await self._feishu.notify_important_email(page)
 
     def _update_store_flags(self, internal_id: Optional[int], ai_action: str):
-        """Echo prevention: 反向同步后更新 SyncStore flags 使其与 Mail.app 一致"""
+        """Echo prevention: 反向同步后更新 SyncStore flags"""
         if not self.sync_store or not internal_id:
             return
 
@@ -221,9 +208,9 @@ class NotionToMailSync:
             is_read = record.get('is_read', False) if isinstance(record, dict) else getattr(record, 'is_read', False)
             is_flagged = record.get('is_flagged', False) if isinstance(record, dict) else getattr(record, 'is_flagged', False)
 
-            if ai_action in (self.ACTION_MARK_READ, self.ACTION_MARK_READ_AND_FLAG, self.ACTION_ARCHIVE):
+            if ai_action in self.FLAG_ACTIONS or ai_action in self.READ_ACTIONS:
                 is_read = True
-            if ai_action in (self.ACTION_FLAG_IMPORTANT, self.ACTION_MARK_READ_AND_FLAG):
+            if ai_action in self.FLAG_ACTIONS:
                 is_flagged = True
 
             self.sync_store.update_local_flags(internal_id, bool(is_read), bool(is_flagged))

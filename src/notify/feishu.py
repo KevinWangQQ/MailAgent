@@ -74,7 +74,7 @@ class FeishuNotifier:
         notion_url = f"https://notion.so/{page_id.replace('-', '')}" if page_id else ""
 
         # 根据优先级选择卡片颜色
-        template = "red" if ai_priority in ("Critical", "Urgent") else "orange"
+        template = "red" if ai_priority in ("🔴 紧急",) else "orange"
 
         card = {
             "header": {
