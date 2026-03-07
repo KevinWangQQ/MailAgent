@@ -218,7 +218,7 @@ class FeishuNotifier:
         if notion_url:
             actions.append({
                 "tag": "button",
-                "text": {"content": "📖 Notion", "tag": "plain_text"},
+                "text": {"content": "打开 Notion", "tag": "plain_text"},
                 "type": "default",
                 "url": notion_url
             })
