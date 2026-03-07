@@ -288,16 +288,27 @@ def _extract_rich_text(prop: Dict) -> str:
                 else:
                     text = f"`{text}`"
             else:
-                if ann.get("bold") and ann.get("italic"):
-                    text = f"***{text}***"
-                elif ann.get("bold"):
-                    text = f"**{text}**"
-                elif ann.get("italic"):
-                    text = f"*{text}*"
-                if ann.get("strikethrough"):
-                    text = f"~~{text}~~"
-                if ann.get("underline"):
-                    text = f"<u>{text}</u>"
+                # Preserve bullet/list prefix outside formatting markers
+                lines = text.split("\n")
+                fmt_lines = []
+                for ln in lines:
+                    prefix = ""
+                    if ln.startswith("- "):
+                        prefix = "- "
+                        ln = ln[2:]
+                    if ln:
+                        if ann.get("bold") and ann.get("italic"):
+                            ln = f"***{ln}***"
+                        elif ann.get("bold"):
+                            ln = f"**{ln}**"
+                        elif ann.get("italic"):
+                            ln = f"*{ln}*"
+                        if ann.get("strikethrough"):
+                            ln = f"~~{ln}~~"
+                        if ann.get("underline"):
+                            ln = f"<u>{ln}</u>"
+                    fmt_lines.append(prefix + ln)
+                text = "\n".join(fmt_lines)
             if link and link.get("url"):
                 text = f"[{text}]({link['url']})"
             color = ann.get("color", "default")
