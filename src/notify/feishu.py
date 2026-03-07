@@ -77,6 +77,7 @@ class FeishuNotifier:
         row_id = page_info.get("row_id")
         message_id = page_info.get("message_id", "")
         category = page_info.get("category", "")
+        reply_suggestion = page_info.get("reply_suggestion", "")
 
         notion_url = f"https://notion.so/{page_id.replace('-', '')}" if page_id else ""
         template = "red" if ai_priority in ("🔴 紧急",) else "orange"
@@ -113,6 +114,13 @@ class FeishuNotifier:
             card["elements"].append({
                 "tag": "div",
                 "text": {"content": f"**概要**\n{ai_summary[:300]}", "tag": "lark_md"}
+            })
+
+        # 建议回复
+        if reply_suggestion:
+            card["elements"].append({
+                "tag": "div",
+                "text": {"content": f"**建议回复**\n{reply_suggestion[:500]}", "tag": "lark_md"}
             })
 
         # 分隔线

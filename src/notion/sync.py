@@ -1116,6 +1116,13 @@ class NotionSync:
                     if cat_sel:
                         category = cat_sel.get("name", "")
 
+                    # 提取 Reply Suggestion
+                    reply_suggestion = ""
+                    reply_prop = props.get("Reply Suggestion", {})
+                    reply_texts = reply_prop.get("rich_text", [])
+                    if reply_texts:
+                        reply_suggestion = "".join(t.get("text", {}).get("content", "") for t in reply_texts)
+
                     pages.append({
                         "page_id": page["id"],
                         "message_id": message_id,
@@ -1129,6 +1136,7 @@ class NotionSync:
                         "ai_summary": ai_summary,
                         "row_id": row_id,
                         "category": category,
+                        "reply_suggestion": reply_suggestion,
                     })
 
                 has_more = results.get("has_more", False)
