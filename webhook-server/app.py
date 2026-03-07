@@ -16,7 +16,7 @@ import base64
 from typing import Any, Dict, List, Optional
 
 import redis.asyncio as redis
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, HTTPException, Path, Query, Request
 from fastapi.responses import HTMLResponse
 from contextlib import asynccontextmanager
 from pydantic import BaseModel, Field
@@ -389,7 +389,7 @@ async def handle_command(body: CommandRequest, request: Request):
 )
 async def get_command_result(
     request: Request,
-    event_id: str = Field(..., description="POST /api/command 返回的 event_id"),
+    event_id: str = Path(..., description="POST /api/command 返回的 event_id"),
     wait: int = Query(
         default=0, ge=0, le=60,
         description=(
