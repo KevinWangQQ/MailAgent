@@ -135,7 +135,7 @@ tail -f logs/sync.log
 | 模块 | 职责 |
 |------|------|
 | `redis_consumer.py` | Redis BLPOP 队列消费者（自动重连） |
-| `handlers.py` | Webhook 事件处理器（flag_changed / ai_reviewed / completed / page_updated） |
+| `handlers.py` | Webhook 事件处理器（flag_changed / ai_reviewed / completed / create_draft / page_updated） |
 
 #### Webhook Server (`webhook-server/`)
 
@@ -317,8 +317,9 @@ Processing Status 状态流转:
 | 事件 | 触发条件 | 处理动作 |
 |------|---------|---------|
 | `flag_changed` | Is Read / Is Flagged 变化 | 同步到 Mail.app |
-| `ai_reviewed` | Processing Status → AI Reviewed | 飞书通知 |
+| `ai_reviewed` | Processing Status → AI Reviewed | Mail.app 标旗 + 飞书通知 + 状态更新为已同步 |
 | `completed` | Processing Status → 已完成 | 移除 Mail.app 旗标 |
+| `create_draft` | Notion 按钮触发 | 调用脚本创建 Mail.app 回复草稿 + 状态更新为草稿已创建 |
 | `page_updated` | 通用事件 | 自动路由到上述处理器 |
 
 #### 4. 内联图片处理

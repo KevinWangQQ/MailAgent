@@ -5,9 +5,13 @@ Webhook 事件处理器
 - flag_changed: Is Read / Is Flagged 变化 → 同步到 Mail.app
 - ai_reviewed: AI Review 完成 → 飞书通知
 - completed: 用户标记已完成 → 移除 Mail.app 旗标
+- create_draft: 创建 Mail.app 回复草稿
 - page_updated: 通用事件 → 自动判断处理方式
 """
 
+import asyncio
+import json
+import os
 from typing import Dict, Optional
 from loguru import logger
 
@@ -176,6 +180,57 @@ class EventHandlers:
             self.sync_store.update_local_flags(internal_id, True, False)
 
         logger.info(f"Completed: unflagged {message_id[:40]}")
+
+    async def handle_create_draft(self, event: Dict):
+        """创建 Mail.app 回复草稿（Notion 按钮 / Openclaw 触发）"""
+        props = event.get("properties", {})
+        page_id = event.get("page_id", "")
+        message_id = props.get("message_id", "")
+        reply_suggestion = props.get("reply_suggestion", "")
+        mailbox = props.get("mailbox", "收件箱")
+
+        if not reply_suggestion:
+            logger.warning(f"create_draft: no reply_suggestion for {page_id}")
+            return
+
+        # 查找 internal_id
+        internal_id = None
+        if message_id and self.sync_store:
+            record = self.sync_store.get_by_message_id(message_id)
+            if record:
+                internal_id = record.get('internal_id') if isinstance(record, dict) else getattr(record, 'internal_id', None)
+
+        # 构建脚本参数
+        script_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "scripts", "create_reply_draft.sh")
+        cmd = ["bash", script_path, "--mode", "reply-all", "--reply-text", reply_suggestion, "--mailbox", mailbox]
+        if internal_id:
+            cmd.extend(["--internal-id", str(internal_id)])
+        elif message_id:
+            cmd.extend(["--message-id", message_id])
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+            output = stdout.decode().strip()
+
+            if proc.returncode == 0:
+                result = json.loads(output) if output else {}
+                method = result.get("method", "unknown")
+                logger.info(f"Draft created: {method} for {message_id[:40]}")
+
+                # 更新 Notion Processing Status
+                if page_id and self.notion_sync:
+                    await self.notion_sync.update_page_mail_sync_status(
+                        page_id, synced=True, processing_status="草稿已创建"
+                    )
+            else:
+                logger.error(f"Draft script failed (rc={proc.returncode}): {stderr.decode()[:200]}")
+        except asyncio.TimeoutError:
+            logger.error(f"Draft script timeout for {message_id[:40]}")
+        except Exception as e:
+            logger.error(f"Draft creation error: {e}")
 
     async def handle_page_updated(self, event: Dict):
         """通用事件: 根据内容自动判断"""

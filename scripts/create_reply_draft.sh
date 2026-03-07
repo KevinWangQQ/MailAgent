@@ -1,0 +1,307 @@
+#!/bin/bash
+# create_reply_draft.sh — 在 Mail.app 中创建邮件草稿
+#
+# 支持三种模式:
+#   --mode reply-all  (默认) Reply All：回复所有人，保留线程
+#   --mode reply      Reply：仅回复发件人，保留线程
+#   --mode new        New：新建邮件（不关联原始邮件）
+#
+# 用法:
+#   bash create_reply_draft.sh \
+#     --internal-id 48197 \
+#     --reply-text "Hi Neil, ..." \
+#     [--mode reply-all] \
+#     [--to "nemo@tp-link.com"] \
+#     [--to-name "Nemo Mo"] \
+#     [--cc "alice@tp-link.com,bob@tp-link.com"] \
+#     [--subject "Re: ..."] \
+#     [--message-id "MWHPR05MB..."] \
+#     [--mailbox "收件箱"] \
+#     [--account "Exchange"] \
+#     [--screenshot]
+#
+# Reply/Reply-All 模式:
+#   优先用 internal_id 定位原始邮件（~1s），fallback 到 message_id（~100s）
+#   找不到原始邮件则 fallback 到 new 模式
+#   使用 System Events 粘贴内容（AppleScript set content 对 reply 无效）
+#
+# New 模式:
+#   直接创建独立草稿，需提供 --to 和 --subject
+#
+# --screenshot: 保存前截取 Mail 窗口，路径在输出 JSON 的 screenshot_path 字段
+#
+# 输出: JSON { "success": true/false, "method": "...", "screenshot_path": "...", "error": "..." }
+
+set -euo pipefail
+
+# 默认值
+MODE="reply-all"
+INTERNAL_ID=""
+MESSAGE_ID=""
+TO_EMAIL=""
+TO_NAME=""
+CC_EMAILS=""
+SUBJECT=""
+REPLY_TEXT=""
+MAILBOX="收件箱"
+ACCOUNT="Exchange"
+SCREENSHOT=false
+SELF_EMAILS="lucien.chen@tp-link.com,yuanquan.chen@tp-link.com"
+SCREENSHOT_DIR="/tmp/mail-drafts"
+
+# 解析参数
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --mode) MODE="$2"; shift 2 ;;
+    --internal-id) INTERNAL_ID="$2"; shift 2 ;;
+    --message-id) MESSAGE_ID="$2"; shift 2 ;;
+    --to) TO_EMAIL="$2"; shift 2 ;;
+    --to-name) TO_NAME="$2"; shift 2 ;;
+    --cc) CC_EMAILS="$2"; shift 2 ;;
+    --subject) SUBJECT="$2"; shift 2 ;;
+    --reply-text) REPLY_TEXT="$2"; shift 2 ;;
+    --mailbox) MAILBOX="$2"; shift 2 ;;
+    --account) ACCOUNT="$2"; shift 2 ;;
+    --screenshot) SCREENSHOT=true; shift ;;
+    *) echo "Unknown arg: $1" >&2; exit 1 ;;
+  esac
+done
+
+# 验证必填参数
+if [[ -z "$REPLY_TEXT" ]]; then
+  echo '{"success":false,"error":"Missing required arg: --reply-text"}'
+  exit 1
+fi
+if [[ "$MODE" == "new" && ( -z "$TO_EMAIL" || -z "$SUBJECT" ) ]]; then
+  echo '{"success":false,"error":"New mode requires --to and --subject"}'
+  exit 1
+fi
+
+# mailbox 路由
+AS_MAILBOX="$MAILBOX"
+[[ "$MAILBOX" == "发件箱" ]] && AS_MAILBOX="已发送邮件"
+
+# AppleScript 字符串转义
+escape_as() {
+  local s="$1"
+  s="${s//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  printf '%s' "$s"
+}
+
+# CC AppleScript 片段构建（过滤自己）
+build_cc_script() {
+  local cc_input="$1"
+  [[ -z "$cc_input" ]] && return
+  local script=""
+  IFS=',' read -ra CC_ARRAY <<< "$cc_input"
+  for addr in "${CC_ARRAY[@]}"; do
+    addr="$(echo "$addr" | xargs)"
+    local skip=false
+    IFS=',' read -ra SELF_ARRAY <<< "$SELF_EMAILS"
+    for self_addr in "${SELF_ARRAY[@]}"; do
+      [[ "$addr" == "$self_addr" ]] && skip=true && break
+    done
+    if [[ "$skip" == "false" && -n "$addr" ]]; then
+      script="${script}
+        make new cc recipient at end of cc recipients with properties {address:\"$(escape_as "$addr")\"}"
+    fi
+  done
+  echo "$script"
+}
+
+# 截图 Mail 前台窗口
+capture_screenshot() {
+  if [[ "$SCREENSHOT" != "true" ]]; then return; fi
+  mkdir -p "$SCREENSHOT_DIR"
+  SCREENSHOT_PATH="${SCREENSHOT_DIR}/draft_$(date +%Y%m%d_%H%M%S).png"
+  # 用 AppleScript 获取 Mail 前台窗口边界，再用 screencapture -R 精确截取
+  local bounds
+  bounds=$(osascript -e '
+    tell application "Mail"
+      set b to bounds of front window
+      set x to item 1 of b
+      set y to item 2 of b
+      set w to (item 3 of b) - x
+      set h to (item 4 of b) - y
+      return (x as text) & "," & (y as text) & "," & (w as text) & "," & (h as text)
+    end tell
+  ' 2>/dev/null || echo "")
+  if [[ -n "$bounds" ]]; then
+    screencapture -R "$bounds" -o "$SCREENSHOT_PATH" 2>/dev/null
+  else
+    screencapture -o "$SCREENSHOT_PATH" 2>/dev/null
+  fi
+}
+
+# System Events 粘贴内容 + 截图 + 保存关闭
+paste_and_save() {
+  local text="$1"
+  osascript <<EOF
+tell application "Mail" to activate
+delay 1
+tell application "System Events"
+  tell process "Mail"
+    set the clipboard to "$text"
+    keystroke "v" using command down
+  end tell
+end tell
+EOF
+  sleep 2
+  capture_screenshot
+  osascript <<EOF
+tell application "System Events"
+  tell process "Mail"
+    keystroke "s" using command down
+    delay 1
+    keystroke "w" using command down
+  end tell
+end tell
+EOF
+  sleep 1
+}
+
+# 输出结果 JSON
+output_result() {
+  local success="$1" method="$2" note="${3:-}"
+  local ss_field=""
+  if [[ "$SCREENSHOT" == "true" && -f "${SCREENSHOT_PATH:-}" ]]; then
+    ss_field=",\"screenshot_path\":\"$SCREENSHOT_PATH\""
+  fi
+  local note_field=""
+  [[ -n "$note" ]] && note_field=",\"note\":\"$(escape_as "$note")\""
+  echo "{\"success\":${success},\"method\":\"${method}\"${ss_field}${note_field}}"
+}
+
+# ── Reply / Reply-All 模式 ──
+do_reply() {
+  local reply_flag="$1"  # "" 或 " and reply to all"
+  local method_suffix="$2"
+
+  # 转义变量
+  local esc_account esc_mailbox
+  esc_account="$(escape_as "$ACCOUNT")"
+  esc_mailbox="$(escape_as "$AS_MAILBOX")"
+
+  # 方法 1: internal_id（快速 ~1s）
+  if [[ -n "$INTERNAL_ID" && "$INTERNAL_ID" != "null" ]]; then
+    RESULT=$(osascript -e "
+      tell application \"Mail\"
+        try
+          set origMsg to first message of mailbox \"${esc_mailbox}\" of account \"${esc_account}\" whose id is ${INTERNAL_ID}
+          reply origMsg with opening window${reply_flag}
+          return \"ok\"
+        on error errMsg
+          return \"error:\" & errMsg
+        end try
+      end tell
+    " 2>&1)
+    if [[ "$RESULT" == "ok" ]]; then
+      sleep 2
+      paste_and_save "$(printf '%s' "$REPLY_TEXT")"
+      output_result "true" "${method_suffix}_internal_id"
+      return 0
+    fi
+    echo "internal_id failed: $RESULT" >&2
+  fi
+
+  # 方法 2: message_id（慢 ~100s）
+  if [[ -n "$MESSAGE_ID" && "$MESSAGE_ID" != "null" ]]; then
+    local esc_msgid
+    esc_msgid="$(escape_as "$MESSAGE_ID")"
+    RESULT=$(osascript -e "
+      tell application \"Mail\"
+        try
+          set origMsg to first message of mailbox \"${esc_mailbox}\" of account \"${esc_account}\" whose message id is \"${esc_msgid}\"
+          reply origMsg with opening window${reply_flag}
+          return \"ok\"
+        on error errMsg
+          return \"error:\" & errMsg
+        end try
+      end tell
+    " 2>&1)
+    if [[ "$RESULT" == "ok" ]]; then
+      sleep 2
+      paste_and_save "$(printf '%s' "$REPLY_TEXT")"
+      output_result "true" "${method_suffix}_message_id"
+      return 0
+    fi
+    echo "message_id failed: $RESULT" >&2
+  fi
+
+  # Fallback: 降级为 new 模式
+  echo "Reply fallback to new mode" >&2
+  do_new "standalone_fallback"
+}
+
+# ── New 模式（独立草稿）──
+do_new() {
+  local method="${1:-new}"
+  local esc_subject esc_reply esc_to esc_to_name
+  esc_subject="$(escape_as "$SUBJECT")"
+  esc_reply="$(escape_as "$REPLY_TEXT")"
+  esc_to="$(escape_as "$TO_EMAIL")"
+  esc_to_name="$(escape_as "$TO_NAME")"
+  local cc_script
+  cc_script="$(build_cc_script "$CC_EMAILS")"
+
+  # new 模式主题自动加 Re: 前缀（如果是 fallback）
+  local subj_prefix=""
+  [[ "$method" == "standalone_fallback" ]] && subj_prefix="Re: "
+
+  RESULT=$(osascript -e "
+    tell application \"Mail\"
+      try
+        set newMsg to make new outgoing message with properties {subject:\"${subj_prefix}${esc_subject}\", content:\"${esc_reply}\", visible:true}
+        tell newMsg
+          make new to recipient at end of to recipients with properties {address:\"${esc_to}\", name:\"${esc_to_name}\"}
+          ${cc_script}
+        end tell
+        activate
+        return \"ok\"
+      on error errMsg
+        return \"error:\" & errMsg
+      end try
+    end tell
+  " 2>&1)
+
+  if [[ "$RESULT" == "ok" ]]; then
+    sleep 2
+    capture_screenshot
+    # 保存并关闭
+    osascript <<'EOF'
+tell application "System Events"
+  tell process "Mail"
+    keystroke "s" using command down
+    delay 1
+    keystroke "w" using command down
+  end tell
+end tell
+EOF
+    sleep 1
+    local note=""
+    [[ "$method" == "standalone_fallback" ]] && note="Original email not found, created standalone draft"
+    output_result "true" "$method" "$note"
+    return 0
+  fi
+
+  echo "{\"success\":false,\"method\":\"$method\",\"error\":\"$(escape_as "$RESULT")\"}"
+  exit 1
+}
+
+# ── 主逻辑 ──
+case "$MODE" in
+  reply-all)
+    do_reply " and reply to all" "reply_all"
+    ;;
+  reply)
+    do_reply "" "reply"
+    ;;
+  new)
+    do_new "new"
+    ;;
+  *)
+    echo "{\"success\":false,\"error\":\"Unknown mode: $MODE. Use reply-all, reply, or new\"}"
+    exit 1
+    ;;
+esac
