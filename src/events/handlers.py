@@ -14,20 +14,25 @@ from loguru import logger
 from src.mail.applescript_arm import AppleScriptArm
 from src.mail.sync_store import SyncStore
 from src.notify.feishu import FeishuNotifier
+from src.notion.sync import NotionSync
 
 
 class EventHandlers:
     """Webhook 事件处理集合"""
+
+    FLAG_ACTIONS = {"需要回复", "需要决策", "需要Review", "需要会议", "需要跟进", "等待响应"}
 
     def __init__(
         self,
         arm: AppleScriptArm,
         sync_store: SyncStore,
         feishu: Optional[FeishuNotifier] = None,
+        notion_sync: Optional[NotionSync] = None,
     ):
         self.arm = arm
         self.sync_store = sync_store
         self.feishu = feishu
+        self.notion_sync = notion_sync
 
     async def handle_flag_changed(self, event: Dict):
         """处理 flag 变化事件: Notion → Mail.app"""
@@ -80,30 +85,35 @@ class EventHandlers:
             self.sync_store.update_local_flags(internal_id, new_read, new_flagged)
 
     async def handle_ai_reviewed(self, event: Dict):
-        """处理 AI Review 完成事件: 飞书通知"""
+        """处理 AI Review 完成事件: Mail.app 标旗 + 飞书通知 + 更新 Notion 状态"""
         props = event.get("properties", {})
         page_id = event.get("page_id", "")
-
         ai_priority = props.get("ai_priority", "")
         ai_action = props.get("ai_action", "")
+        message_id = props.get("message_id", "")
+        mailbox = props.get("mailbox", "")
+
+        # 查找 internal_id
+        internal_id = None
+        if message_id and self.sync_store:
+            record = self.sync_store.get_by_message_id(message_id)
+            if record:
+                internal_id = record.get('internal_id') if isinstance(record, dict) else getattr(record, 'internal_id', None)
+
+        # Mail.app 标旗/已读
+        if internal_id:
+            if ai_action in self.FLAG_ACTIONS:
+                self.arm.mark_as_read_by_id(internal_id, True, mailbox)
+                self.arm.set_flag_by_id(internal_id, True, mailbox)
+                self.sync_store.update_local_flags(internal_id, True, True)
+            else:
+                self.arm.mark_as_read_by_id(internal_id, True, mailbox)
+                self.sync_store.update_local_flags(internal_id, True, False)
 
         # 飞书通知：重要/紧急 且 需要行动
         notify_priorities = {"🔴 紧急", "🟡 重要"}
-        flag_actions = {"需要回复", "需要决策", "需要Review", "需要会议", "需要跟进", "等待响应"}
-        should_notify = (
-            ai_priority in notify_priorities
-            and ai_action in flag_actions
-        )
-
+        should_notify = ai_priority in notify_priorities and ai_action in self.FLAG_ACTIONS
         if should_notify and self.feishu:
-            message_id = props.get("message_id", "")
-            # 查找 internal_id
-            internal_id = None
-            if message_id and self.sync_store:
-                record = self.sync_store.get_by_message_id(message_id)
-                if record:
-                    internal_id = record.get('internal_id') if isinstance(record, dict) else getattr(record, 'internal_id', None)
-
             await self.feishu.notify_important_email({
                 "page_id": page_id,
                 "message_id": message_id,
@@ -114,13 +124,22 @@ class EventHandlers:
                 "to_addr": props.get("to_addr", ""),
                 "cc_addr": props.get("cc_addr", ""),
                 "date": props.get("date", ""),
-                "mailbox": props.get("mailbox", ""),
+                "mailbox": mailbox,
                 "ai_action": ai_action,
                 "ai_priority": ai_priority,
                 "ai_summary": props.get("ai_summary", ""),
                 "reply_suggestion": props.get("reply_suggestion", ""),
                 "category": props.get("category", ""),
             })
+
+        # 更新 Notion Processing Status → 已同步
+        if page_id and self.notion_sync:
+            try:
+                await self.notion_sync.update_page_mail_sync_status(
+                    page_id, synced=True, processing_status="已同步"
+                )
+            except Exception as e:
+                logger.warning(f"Webhook: failed to update Notion status: {e}")
 
     async def handle_completed(self, event: Dict):
         """处理用户标记已完成事件: 移除 Mail.app 旗标"""

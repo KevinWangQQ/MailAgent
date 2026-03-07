@@ -149,23 +149,10 @@ class FeishuNotifier:
         mailbox = kw.get("mailbox", "")
 
         elements = [
+            {"tag": "markdown", "content": f"**{subject}**"},
             {
                 "tag": "column_set",
-                "flex_mode": "none",
-                "background_style": "default",
-                "columns": [
-                    {
-                        "tag": "column",
-                        "width": "weighted",
-                        "weight": 1,
-                        "vertical_align": "top",
-                        "elements": [{"tag": "markdown", "content": f"**{subject}**"}]
-                    }
-                ]
-            },
-            {
-                "tag": "column_set",
-                "flex_mode": "bisect",
+                "flex_mode": "trisect",
                 "background_style": "grey",
                 "columns": [
                     {
@@ -175,22 +162,11 @@ class FeishuNotifier:
                     {
                         "tag": "column", "width": "weighted", "weight": 1,
                         "elements": [{"tag": "markdown", "content": f"**优先级**\n{ai_priority or 'N/A'}"}]
-                    }
-                ]
-            },
-            {
-                "tag": "column_set",
-                "flex_mode": "bisect",
-                "background_style": "grey",
-                "columns": [
-                    {
-                        "tag": "column", "width": "weighted", "weight": 1,
-                        "elements": [{"tag": "markdown", "content": f"**操作**\n{ai_action or 'N/A'}"}]
                     },
                     {
                         "tag": "column", "width": "weighted", "weight": 1,
                         "elements": [{"tag": "markdown", "content": f"**时间**\n{date_str[:16] if date_str else 'N/A'}"}]
-                    }
+                    },
                 ]
             },
         ]
@@ -199,10 +175,15 @@ class FeishuNotifier:
             elements.append({"tag": "markdown", "content": f"**📝 概要**\n{ai_summary[:300]}"})
 
         if reply_suggestion:
-            elements.append({
-                "tag": "note",
-                "elements": [{"tag": "plain_text", "content": f"💡 建议回复：{reply_suggestion[:200]}"}]
-            })
+            if len(reply_suggestion) > 150:
+                elements.append({
+                    "tag": "collapsible_panel",
+                    "expanded": False,
+                    "header": {"title": {"tag": "plain_text", "content": "💡 建议回复（点击展开）"}},
+                    "elements": [{"tag": "markdown", "content": reply_suggestion[:800]}]
+                })
+            else:
+                elements.append({"tag": "markdown", "content": f"**💡 建议回复**\n{reply_suggestion}"})
 
         elements.append({"tag": "hr"})
 
@@ -285,10 +266,11 @@ class FeishuNotifier:
             return False
         try:
             session = await self._get_session()
+            headers = {"Authorization": f"Bearer {token}"}
             async with session.post(
                 self.MSG_URL,
                 params={"receive_id_type": "chat_id"},
-                headers={"Authorization": f"Bearer {token}"},
+                headers=headers,
                 json={
                     "receive_id": self.chat_id,
                     "msg_type": "interactive",
@@ -297,14 +279,39 @@ class FeishuNotifier:
                 timeout=aiohttp.ClientTimeout(total=10),
             ) as resp:
                 data = await resp.json()
-                if data.get("code") == 0:
-                    logger.info(f"Feishu app notification sent: {subject[:50]}")
-                    return True
-                logger.error(f"Feishu app API error: {data}")
-                return False
+                if data.get("code") != 0:
+                    logger.error(f"Feishu app API error: {data}")
+                    return False
+
+            msg_id = data.get("data", {}).get("message_id", "")
+            logger.info(f"Feishu app notification sent: {subject[:50]} ({msg_id})")
+
+            # 回写 open_message_id 到按钮回调
+            if msg_id:
+                self._inject_open_message_id(card, msg_id)
+                async with session.patch(
+                    f"{self.MSG_URL}/{msg_id}",
+                    headers=headers,
+                    json={"content": json.dumps(card)},
+                    timeout=aiohttp.ClientTimeout(total=5),
+                ) as patch_resp:
+                    patch_data = await patch_resp.json()
+                    if patch_data.get("code") != 0:
+                        logger.warning(f"Feishu PATCH open_message_id failed: {patch_data}")
+
+            return True
         except Exception as e:
             logger.error(f"Feishu app notification failed: {e}")
             return False
+
+    @staticmethod
+    def _inject_open_message_id(card: Dict, msg_id: str):
+        """将 open_message_id 注入所有按钮 value"""
+        for el in card.get("elements", []):
+            if el.get("tag") == "action":
+                for btn in el.get("actions", []):
+                    if isinstance(btn.get("value"), dict):
+                        btn["value"]["open_message_id"] = msg_id
 
     async def _send_via_webhook(self, card: Dict, subject: str) -> bool:
         """Webhook fallback"""

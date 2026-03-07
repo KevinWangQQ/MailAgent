@@ -55,6 +55,7 @@ class EmailNotionSyncApp:
                 arm=self.watcher.arm,
                 sync_store=self.watcher.sync_store,
                 feishu=feishu,
+                notion_sync=self.watcher.notion_sync,
             )
 
             self.redis_consumer.on("flag_changed", handlers.handle_flag_changed)

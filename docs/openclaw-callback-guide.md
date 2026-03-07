@@ -92,9 +92,20 @@ Openclaw 操作 Mail.app 时**始终优先使用 `internal_id`**，仅在 `inter
 
   // ── AI 标注 ──
   "ai_action": "需要回复",
-  "ai_priority": "🔴 紧急"
+  "ai_priority": "🔴 紧急",
+
+  // ── 飞书上下文 ──
+  "chat_id": "oc_xxx",
+  "open_message_id": "om_xxx"
 }
 ```
+
+**飞书上下文字段说明**：
+
+| 字段 | 说明 |
+|------|------|
+| `chat_id` | 飞书群聊 ID，确保回复发到正确的群 |
+| `open_message_id` | 原始卡片消息 ID（发送后 PATCH 回写），可用于 `replyInThread` 模式创建话题回复 |
 
 **`enhance_reply` 额外字段**：
 
@@ -133,12 +144,13 @@ Openclaw 操作 Mail.app 时**始终优先使用 `internal_id`**，仅在 `inter
 ```
 用户点击 → Openclaw 收到回调
   ├─ 1. 从 reply_suggestion 获取回复正文
-  ├─ 2. 通过 AppleScript 创建草稿（见下方参考）
-  │     ├─ 收件人: from_email (原发件人)
-  │     ├─ 抄送: 从 to/cc 中去掉自己后保留
-  │     ├─ 主题: Re: {subject}
-  │     └─ 正文: reply_suggestion
-  ├─ 3. 通过飞书消息通知用户: "草稿已创建，请在 Mail.app 中查看"
+  ├─ 2. 调用 create_reply_draft.sh 创建草稿
+  │     ├─ --mode reply-all (默认) / reply / new
+  │     ├─ --internal-id 快速定位原始邮件
+  │     ├─ --screenshot 截取草稿窗口
+  │     └─ 输出 JSON { success, method, screenshot_path }
+  ├─ 3. 通过飞书消息通知用户（可附截图）
+  │     使用 open_message_id 做话题回复（replyInThread）
   └─ 4. 可选: 更新 Notion Processing Status → 已完成
 ```
 
@@ -184,28 +196,82 @@ end tell
 # "Parent Item" Relation 字段指向线程头邮件
 ```
 
-## 草稿创建 AppleScript 参考
+## 草稿创建脚本
 
-```applescript
-tell application "Mail"
-    set newMsg to make new outgoing message with properties {
-        subject: "Re: 【立项评审】Omada SDN Controller V6.3",
-        content: "Hi Nemo，收到...",
-        visible: true
-    }
-    tell newMsg
-        make new to recipient at end of to recipients with properties {
-            address: "nemo.mo@tp-link.com",
-            name: "Nemo Mo"
-        }
-        -- 可选: 添加 CC
-        make new cc recipient at end of cc recipients with properties {
-            address: "alice@tp-link.com"
-        }
-    end tell
-    -- 不调用 send，仅保存为草稿
-end tell
+**脚本位置**：`~/.openclaw/workspace/skills/apple-mail/scripts/create_reply_draft.sh`
+
+### 三种模式
+
+| 模式 | 说明 | 收件人 | 线程历史 |
+|------|------|--------|---------|
+| `reply-all` (默认) | 回复所有人 | 原发件人 + 原 To/CC (去掉自己) | 完整保留 |
+| `reply` | 仅回复发件人 | 原发件人 | 完整保留 |
+| `new` | 新建邮件 | 需手动指定 --to | 无 |
+
+### 调用示例
+
+```bash
+# Reply All（推荐，默认模式）
+bash ~/.openclaw/workspace/skills/apple-mail/scripts/create_reply_draft.sh \
+  --internal-id 48197 \
+  --mailbox "收件箱" \
+  --reply-text "Hi Neil, Thank you..." \
+  --screenshot
+
+# Reply（仅回复发件人）
+bash ~/.openclaw/workspace/skills/apple-mail/scripts/create_reply_draft.sh \
+  --mode reply \
+  --internal-id 48197 \
+  --mailbox "收件箱" \
+  --reply-text "Hi Neil, ..."
+
+# New（新建邮件，不关联原始邮件）
+bash ~/.openclaw/workspace/skills/apple-mail/scripts/create_reply_draft.sh \
+  --mode new \
+  --to "neil.mabini@tp-link.com" \
+  --to-name "Neil Mabini" \
+  --cc "echo.liu@tp-link.com,xavier.chen@tp-link.com" \
+  --subject "MAC Group Follow-up" \
+  --reply-text "Hi Neil, ..."
 ```
+
+### 参数说明
+
+| 参数 | 必填 | 默认值 | 说明 |
+|------|------|--------|------|
+| `--mode` | 否 | `reply-all` | `reply-all` / `reply` / `new` |
+| `--internal-id` | reply 模式必填 | | Mail.app internal_id（快速 ~1s） |
+| `--message-id` | 否 | | RFC 2822 Message-ID（fallback ~100s） |
+| `--to` | new 模式必填 | | 收件人邮箱 |
+| `--to-name` | 否 | | 收件人名称 |
+| `--cc` | 否 | | 抄送（逗号分隔，自动过滤自己） |
+| `--subject` | new 模式必填 | | 邮件主题 |
+| `--reply-text` | 是 | | 回复正文 |
+| `--mailbox` | 否 | `收件箱` | 邮箱名称 |
+| `--account` | 否 | `Exchange` | Mail.app 账户名 |
+| `--screenshot` | 否 | | 保存前截取 Mail 窗口 |
+
+### 输出 JSON
+
+```json
+{
+  "success": true,
+  "method": "reply_all_internal_id",
+  "screenshot_path": "/tmp/mail-drafts/draft_20260307_021816.png"
+}
+```
+
+`method` 值说明：
+- `reply_all_internal_id` / `reply_internal_id` — 通过 internal_id 成功创建回复
+- `reply_all_message_id` / `reply_message_id` — fallback 到 message_id
+- `new` — 新建模式
+- `standalone_fallback` — 回复模式找不到原始邮件，降级为新建
+
+### 技术实现
+
+Reply/Reply-All 模式使用 AppleScript `reply ... with opening window` 创建真正的回复（保留完整线程历史），再通过 System Events 粘贴正文内容（AppleScript 的 `set content` 对 reply 草稿无效）。最后 `Cmd+S` 保存 + `Cmd+W` 关闭窗口。
+
+**注意**：此方式需要 Mail.app UI 短暂弹出窗口（约 3 秒），无法完全无头运行。
 
 Exchange 账户的草稿会自动同步到 Outlook，用户可在任意设备查看和发送。
 

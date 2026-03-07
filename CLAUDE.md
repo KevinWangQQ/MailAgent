@@ -50,6 +50,9 @@ pm2 start main.py --name mail-sync --interpreter python3  # PM2
 
 # 日志
 tail -f logs/sync.log
+
+# 部署 webhook-server 到远程服务器
+./scripts/deploy-webhook.sh
 ```
 
 ## 架构
@@ -141,6 +144,9 @@ tail -f logs/sync.log
 | `app.py` | FastAPI 服务，接收 Notion Automation webhook → Redis 队列路由 |
 | `ecosystem.config.js` | PM2 进程配置（端口 8100） |
 | `deploy.md` | 服务器部署指南 |
+| `../scripts/deploy-webhook.sh` | 一键部署脚本（`sshpass` + SSH） |
+
+**远程服务器**：`root@106.52.146.114`，路径 `/home/lighthouse/MailAgent/webhook-server`，PM2 进程名 `mailagent-webhook`。密码文件：`~/.ssh/guangzhou_pass`。
 
 #### Notion 模块 (`src/notion/`)
 
@@ -505,7 +511,7 @@ python3 scripts/test_mail_reader.py
 - **临时附件**: `/tmp/email-notion-sync/{md5}/`
 - **配置**: `.env`
 - **优化文档**: `docs/applescript_id_optimization.md`
-- **Webhook Server**: `webhook-server/`（独立部署，见 `webhook-server/deploy.md`）
+- **Webhook Server**: `webhook-server/`（远程部署，一键更新：`./scripts/deploy-webhook.sh`）
 
 ## 关于 calendar_main.py
 
