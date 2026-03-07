@@ -1017,7 +1017,7 @@ class NotionSync:
         pages = []
 
         try:
-            logger.info("Querying pages for reverse sync...")
+            logger.debug("Querying pages for reverse sync...")
 
             filter_conditions = {
                 "and": [
@@ -1157,7 +1157,8 @@ class NotionSync:
                 has_more = results.get("has_more", False)
                 start_cursor = results.get("next_cursor")
 
-            logger.info(f"Found {len(pages)} pages for reverse sync")
+            if pages:
+                logger.info(f"Found {len(pages)} pages for reverse sync")
             return pages
 
         except Exception as e:
