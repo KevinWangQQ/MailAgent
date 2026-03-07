@@ -10,6 +10,7 @@ MailAgent Webhook Server
 import asyncio
 import json
 import os
+import re
 import time
 import uuid
 import base64
@@ -296,6 +297,12 @@ def _extract_rich_text(prop: Dict) -> str:
                     if ln.startswith("- "):
                         prefix = "- "
                         ln = ln[2:]
+                    else:
+                        # Strip leading spaces from numbered list items
+                        m = re.match(r'^(\s+)(\d+\.\s)', ln)
+                        if m:
+                            prefix = m.group(2)
+                            ln = ln[m.end():]
                     if ln:
                         if ann.get("bold") and ann.get("italic"):
                             ln = f"***{ln}***"
