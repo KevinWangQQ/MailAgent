@@ -1,15 +1,12 @@
 """
-飞书自定义机器人通知模块
+飞书应用机器人通知模块
 
-通过 webhook 发送交互式卡片消息，用于通知重要邮件。
-支持签名验证（可选）。
+通过飞书 Open API 发送交互式卡片消息，用于通知重要邮件。
+支持卡片按钮回调（由 Openclaw 处理）。
 """
 
-import time
-import hmac
-import hashlib
-import base64
 import json
+import time
 from datetime import datetime, timedelta
 from typing import Dict, Optional
 
@@ -18,15 +15,30 @@ from loguru import logger
 
 
 class FeishuNotifier:
-    """飞书自定义机器人通知器"""
+    """飞书应用机器人通知器"""
 
-    # 只通知最近 N 天内的邮件，防止补偿同步时的通知风暴
     NOTIFY_MAX_AGE_DAYS = 3
+    TOKEN_URL = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal"
+    MSG_URL = "https://open.feishu.cn/open-apis/im/v1/messages"
 
-    def __init__(self, webhook_url: str, secret: str = ""):
+    def __init__(
+        self,
+        app_id: str = "",
+        app_secret: str = "",
+        chat_id: str = "",
+        webhook_url: str = "",
+        secret: str = "",
+    ):
+        self.app_id = app_id
+        self.app_secret = app_secret
+        self.chat_id = chat_id
+        # webhook 作为 fallback
         self.webhook_url = webhook_url
-        self.secret = secret
+        self.webhook_secret = secret
         self._session: Optional[aiohttp.ClientSession] = None
+        self._token: str = ""
+        self._token_expire: float = 0
+        self._use_app_api = bool(app_id and app_secret and chat_id)
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
@@ -38,17 +50,25 @@ class FeishuNotifier:
             await self._session.close()
             self._session = None
 
-    def _gen_sign(self, timestamp: int) -> str:
-        string_to_sign = f"{timestamp}\n{self.secret}"
-        hmac_code = hmac.new(string_to_sign.encode("utf-8"), digestmod=hashlib.sha256).digest()
-        return base64.b64encode(hmac_code).decode("utf-8")
+    async def _get_token(self) -> str:
+        if self._token and time.time() < self._token_expire - 60:
+            return self._token
+        session = await self._get_session()
+        async with session.post(self.TOKEN_URL, json={
+            "app_id": self.app_id, "app_secret": self.app_secret
+        }) as resp:
+            data = await resp.json()
+            if data.get("code") != 0:
+                logger.error(f"Feishu token failed: {data}")
+                return ""
+            self._token = data["tenant_access_token"]
+            self._token_expire = time.time() + data.get("expire", 7200)
+            return self._token
 
     def _is_recent(self, date_str: str) -> bool:
-        """检查邮件日期是否在通知窗口内"""
         if not date_str:
-            return True  # 无日期信息时默认通知
+            return True
         try:
-            # 支持 ISO 格式: 2026-03-05T10:30:00+08:00 或 2026-03-05
             dt = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
             cutoff = datetime.now(dt.tzinfo) - timedelta(days=self.NOTIFY_MAX_AGE_DAYS)
             return dt >= cutoff
@@ -57,12 +77,15 @@ class FeishuNotifier:
 
     async def notify_important_email(self, page_info: Dict) -> bool:
         """发送重要邮件通知卡片"""
-        if not self.webhook_url:
+        if not self._use_app_api and not self.webhook_url:
+            return False
+
+        # 跳过发件箱邮件
+        mailbox = page_info.get("mailbox", "")
+        if mailbox in ("发件箱", "已发送邮件", "已发送"):
             return False
 
         date_str = page_info.get("date", "")
-
-        # 跳过过期邮件通知
         if not self._is_recent(date_str):
             logger.debug(f"Skipping notification for old email: {page_info.get('subject', '')[:40]}")
             return False
@@ -83,83 +106,111 @@ class FeishuNotifier:
         notion_url = f"https://notion.so/{page_id.replace('-', '')}" if page_id else ""
         template = "red" if ai_priority in ("🔴 紧急",) else "orange"
 
-        card = {
-            "header": {
-                "title": {"content": f"📬 {ai_action or '需要处理'}", "tag": "plain_text"},
-                "template": template
+        card = self._build_card(
+            subject=subject, sender_display=sender_display,
+            ai_priority=ai_priority, ai_action=ai_action,
+            category=category, date_str=date_str,
+            ai_summary=ai_summary, reply_suggestion=reply_suggestion,
+            notion_url=notion_url, template=template,
+            page_id=page_id, message_id=message_id,
+            row_id=row_id, from_email=from_email,
+        )
+
+        if self._use_app_api:
+            return await self._send_via_app_api(card, subject)
+        return await self._send_via_webhook(card, subject)
+
+    def _build_card(self, **kw) -> Dict:
+        subject = kw["subject"]
+        sender_display = kw["sender_display"]
+        ai_priority = kw["ai_priority"]
+        ai_action = kw["ai_action"]
+        category = kw["category"]
+        date_str = kw["date_str"]
+        ai_summary = kw["ai_summary"]
+        reply_suggestion = kw["reply_suggestion"]
+        notion_url = kw["notion_url"]
+        template = kw["template"]
+        page_id = kw["page_id"]
+        message_id = kw["message_id"]
+        row_id = kw["row_id"]
+        from_email = kw["from_email"]
+
+        elements = [
+            {
+                "tag": "column_set",
+                "flex_mode": "none",
+                "background_style": "default",
+                "columns": [
+                    {
+                        "tag": "column",
+                        "width": "weighted",
+                        "weight": 1,
+                        "vertical_align": "top",
+                        "elements": [{"tag": "markdown", "content": f"**{subject}**"}]
+                    }
+                ]
             },
-            "elements": [
-                {
-                    "tag": "div",
-                    "text": {"content": f"**{subject}**", "tag": "lark_md"}
-                },
-                {
-                    "tag": "div",
-                    "fields": [
-                        {"is_short": True, "text": {"content": f"**发件人**\n{sender_display}", "tag": "lark_md"}},
-                        {"is_short": True, "text": {"content": f"**优先级**\n{ai_priority or 'N/A'}", "tag": "lark_md"}}
-                    ]
-                },
-                {
-                    "tag": "div",
-                    "fields": [
-                        {"is_short": True, "text": {"content": f"**分类**\n{category or 'N/A'}", "tag": "lark_md"}},
-                        {"is_short": True, "text": {"content": f"**时间**\n{date_str[:16] if date_str else 'N/A'}", "tag": "lark_md"}}
-                    ]
-                },
-            ]
-        }
+            {
+                "tag": "column_set",
+                "flex_mode": "bisect",
+                "background_style": "grey",
+                "columns": [
+                    {
+                        "tag": "column", "width": "weighted", "weight": 1,
+                        "elements": [{"tag": "markdown", "content": f"**发件人**\n{sender_display}"}]
+                    },
+                    {
+                        "tag": "column", "width": "weighted", "weight": 1,
+                        "elements": [{"tag": "markdown", "content": f"**优先级**\n{ai_priority or 'N/A'}"}]
+                    }
+                ]
+            },
+            {
+                "tag": "column_set",
+                "flex_mode": "bisect",
+                "background_style": "grey",
+                "columns": [
+                    {
+                        "tag": "column", "width": "weighted", "weight": 1,
+                        "elements": [{"tag": "markdown", "content": f"**分类**\n{category or 'N/A'}"}]
+                    },
+                    {
+                        "tag": "column", "width": "weighted", "weight": 1,
+                        "elements": [{"tag": "markdown", "content": f"**时间**\n{date_str[:16] if date_str else 'N/A'}"}]
+                    }
+                ]
+            },
+        ]
 
-        # AI 概要
         if ai_summary:
-            card["elements"].append({
-                "tag": "div",
-                "text": {"content": f"**概要**\n{ai_summary[:300]}", "tag": "lark_md"}
-            })
+            elements.append({"tag": "markdown", "content": f"**📝 概要**\n{ai_summary[:300]}"})
 
-        # 建议回复
         if reply_suggestion:
-            card["elements"].append({
-                "tag": "div",
-                "text": {"content": f"**建议回复**\n{reply_suggestion[:500]}", "tag": "lark_md"}
+            elements.append({
+                "tag": "note",
+                "elements": [{"tag": "plain_text", "content": f"💡 建议回复：{reply_suggestion[:200]}"}]
             })
 
-        # 分隔线
-        card["elements"].append({"tag": "hr"})
+        elements.append({"tag": "hr"})
 
-        # 构造完整信息 JSON（供 Openclaw 使用）
+        # 完整信息折叠面板
         info_data = {
-            "row_id": row_id,
-            "page_id": page_id,
-            "message_id": message_id,
-            "subject": subject,
-            "from": sender_display,
-            "date": date_str,
-            "action": ai_action,
-            "priority": ai_priority,
+            "row_id": row_id, "page_id": page_id, "message_id": message_id,
+            "subject": subject, "from": sender_display, "from_email": from_email,
+            "date": date_str, "action": ai_action, "priority": ai_priority,
             "category": category,
             "summary": ai_summary[:200] if ai_summary else "",
             "reply_suggestion": reply_suggestion[:300] if reply_suggestion else "",
             "notion_url": notion_url,
         }
-        info_json_pretty = json.dumps(info_data, ensure_ascii=False, indent=2)
+        info_json = json.dumps(info_data, ensure_ascii=False, indent=2)
 
-        # 折叠面板：点击展开完整信息，代码块自带复制按钮
-        card["elements"].append({
+        elements.append({
             "tag": "collapsible_panel",
             "expanded": False,
-            "header": {
-                "title": {
-                    "tag": "plain_text",
-                    "content": "📋 完整信息（点击展开复制）"
-                }
-            },
-            "elements": [
-                {
-                    "tag": "markdown",
-                    "content": f"```json\n{info_json_pretty}\n```"
-                }
-            ]
+            "header": {"title": {"tag": "plain_text", "content": "📋 完整信息（点击展开复制）"}},
+            "elements": [{"tag": "markdown", "content": f"```json\n{info_json}\n```"}]
         })
 
         # 按钮行
@@ -167,39 +218,91 @@ class FeishuNotifier:
         if notion_url:
             actions.append({
                 "tag": "button",
-                "text": {"content": "在 Notion 中查看", "tag": "plain_text"},
-                "type": "primary",
+                "text": {"content": "📖 Notion", "tag": "plain_text"},
+                "type": "default",
                 "url": notion_url
             })
+
+        # 快捷回复按钮（回调到 Openclaw）
+        needs_reply = ai_action in ("需要回复", "需要决策")
+        if needs_reply and reply_suggestion:
+            actions.append({
+                "tag": "button",
+                "text": {"content": "✏️ 快捷回复", "tag": "plain_text"},
+                "type": "primary",
+                "value": {
+                    "action": "quick_reply",
+                    "message_id": message_id,
+                    "subject": subject,
+                    "from_email": from_email,
+                    "from_name": sender_display,
+                    "reply_suggestion": reply_suggestion[:500],
+                    "page_id": page_id,
+                    "notion_url": notion_url,
+                }
+            })
+
         if actions:
-            card["elements"].append({"tag": "action", "actions": actions})
+            elements.append({"tag": "action", "actions": actions})
 
-        payload = {"msg_type": "interactive", "card": card}
+        return {
+            "header": {
+                "title": {"content": f"📬 {ai_action or '需要处理'}", "tag": "plain_text"},
+                "template": template,
+            },
+            "elements": elements,
+        }
 
-        if self.secret:
-            timestamp = int(time.time())
-            payload["timestamp"] = str(timestamp)
-            payload["sign"] = self._gen_sign(timestamp)
-
+    async def _send_via_app_api(self, card: Dict, subject: str) -> bool:
+        token = await self._get_token()
+        if not token:
+            return False
         try:
             session = await self._get_session()
             async with session.post(
-                self.webhook_url,
-                json=payload,
-                timeout=aiohttp.ClientTimeout(total=10)
+                self.MSG_URL,
+                params={"receive_id_type": "chat_id"},
+                headers={"Authorization": f"Bearer {token}"},
+                json={
+                    "receive_id": self.chat_id,
+                    "msg_type": "interactive",
+                    "content": json.dumps(card),
+                },
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                data = await resp.json()
+                if data.get("code") == 0:
+                    logger.info(f"Feishu app notification sent: {subject[:50]}")
+                    return True
+                logger.error(f"Feishu app API error: {data}")
+                return False
+        except Exception as e:
+            logger.error(f"Feishu app notification failed: {e}")
+            return False
+
+    async def _send_via_webhook(self, card: Dict, subject: str) -> bool:
+        """Webhook fallback"""
+        import hmac, hashlib, base64
+        payload = {"msg_type": "interactive", "card": card}
+        if self.webhook_secret:
+            timestamp = int(time.time())
+            string_to_sign = f"{timestamp}\n{self.webhook_secret}"
+            hmac_code = hmac.new(string_to_sign.encode("utf-8"), digestmod=hashlib.sha256).digest()
+            payload["timestamp"] = str(timestamp)
+            payload["sign"] = base64.b64encode(hmac_code).decode("utf-8")
+        try:
+            session = await self._get_session()
+            async with session.post(
+                self.webhook_url, json=payload,
+                timeout=aiohttp.ClientTimeout(total=10),
             ) as resp:
                 if resp.status == 200:
                     result = await resp.json()
                     if result.get("code") == 0:
-                        logger.info(f"Feishu notification sent: {subject[:50]}")
+                        logger.info(f"Feishu webhook notification sent: {subject[:50]}")
                         return True
-                    else:
-                        logger.error(f"Feishu API error: {result}")
-                        return False
-                else:
-                    text = await resp.text()
-                    logger.error(f"Feishu webhook failed: HTTP {resp.status} - {text[:200]}")
-                    return False
+                    logger.error(f"Feishu webhook error: {result}")
+                return False
         except Exception as e:
-            logger.error(f"Feishu notification failed: {e}")
+            logger.error(f"Feishu webhook notification failed: {e}")
             return False

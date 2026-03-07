@@ -45,13 +45,17 @@ class NotionToMailSync:
         self.notify_count = 0
 
         self._feishu = None
-        if config.feishu_notify_enabled and config.feishu_webhook_url:
+        if config.feishu_notify_enabled:
             from src.notify.feishu import FeishuNotifier
             self._feishu = FeishuNotifier(
+                app_id=config.feishu_app_id,
+                app_secret=config.feishu_app_secret,
+                chat_id=config.feishu_chat_id,
                 webhook_url=config.feishu_webhook_url,
-                secret=config.feishu_webhook_secret
+                secret=config.feishu_webhook_secret,
             )
-            logger.info("Feishu notification enabled")
+            mode = "app_api" if config.feishu_app_id else "webhook"
+            logger.info(f"Feishu notification enabled (mode={mode})")
 
         logger.info("NotionToMailSync initialized")
 
