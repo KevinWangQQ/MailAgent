@@ -9,6 +9,7 @@ import time
 import hmac
 import hashlib
 import base64
+import json
 from datetime import datetime, timedelta
 from typing import Dict, Optional
 
@@ -22,9 +23,10 @@ class FeishuNotifier:
     # 只通知最近 N 天内的邮件，防止补偿同步时的通知风暴
     NOTIFY_MAX_AGE_DAYS = 3
 
-    def __init__(self, webhook_url: str, secret: str = ""):
+    def __init__(self, webhook_url: str, secret: str = "", copy_base_url: str = ""):
         self.webhook_url = webhook_url
         self.secret = secret
+        self.copy_base_url = copy_base_url or "https://mailagent.chenge.ink"
         self._session: Optional[aiohttp.ClientSession] = None
 
     async def _get_session(self) -> aiohttp.ClientSession:
@@ -126,17 +128,30 @@ class FeishuNotifier:
         # 分隔线
         card["elements"].append({"tag": "hr"})
 
-        # 可复制的结构化信息（供 Openclaw 使用）
-        info_lines = [f"Row ID: {row_id or 'N/A'}"]
-        if message_id:
-            info_lines.append(f"Message-ID: {message_id[:60]}")
-        info_lines.append(f"Action: {ai_action or 'N/A'}")
-        info_lines.append(f"Priority: {ai_priority or 'N/A'}")
-        info_block = "\n".join(info_lines)
+        # 构造完整信息 JSON（供 Openclaw 使用）
+        info_data = {
+            "row_id": row_id,
+            "page_id": page_id,
+            "message_id": message_id,
+            "subject": subject,
+            "from": sender_display,
+            "date": date_str,
+            "action": ai_action,
+            "priority": ai_priority,
+            "category": category,
+            "summary": ai_summary[:200] if ai_summary else "",
+            "reply_suggestion": reply_suggestion[:300] if reply_suggestion else "",
+            "notion_url": notion_url,
+        }
+        info_json = json.dumps(info_data, ensure_ascii=False, separators=(",", ":"))
+        copy_param = base64.urlsafe_b64encode(info_json.encode()).decode()
+        copy_url = f"{self.copy_base_url}/copy?d={copy_param}"
 
+        # 精简预览块
+        preview = f"Row ID: {row_id or 'N/A'} | Page: {page_id[:12]}..."
         card["elements"].append({
             "tag": "div",
-            "text": {"content": f"```\n{info_block}\n```", "tag": "lark_md"}
+            "text": {"content": f"`{preview}`", "tag": "lark_md"}
         })
 
         # 按钮行
@@ -148,8 +163,13 @@ class FeishuNotifier:
                 "type": "primary",
                 "url": notion_url
             })
-        if actions:
-            card["elements"].append({"tag": "action", "actions": actions})
+        actions.append({
+            "tag": "button",
+            "text": {"content": "一键复制信息", "tag": "plain_text"},
+            "type": "default",
+            "url": copy_url
+        })
+        card["elements"].append({"tag": "action", "actions": actions})
 
         payload = {"msg_type": "interactive", "card": card}
 

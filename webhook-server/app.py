@@ -11,10 +11,12 @@ import json
 import os
 import time
 import uuid
+import base64
 from typing import Any, Dict, Optional
 
 import redis.asyncio as redis
 from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse
 from contextlib import asynccontextmanager
 
 # Config
@@ -144,6 +146,41 @@ async def handle_notion_webhook(
     await redis_pool.expire(queue_key, QUEUE_TTL_DAYS * 86400)
 
     return {"ok": True, "queue": queue_key, "event_id": message["id"]}
+
+
+@app.get("/copy", response_class=HTMLResponse)
+async def copy_info(d: str = Query(..., description="Base64 encoded JSON")):
+    """一键复制邮件信息页面"""
+    try:
+        raw = base64.urlsafe_b64decode(d).decode("utf-8")
+        # 格式化 JSON 方便阅读
+        data = json.loads(raw)
+        formatted = json.dumps(data, ensure_ascii=False, indent=2)
+    except Exception:
+        formatted = raw if 'raw' in dir() else "Invalid data"
+
+    return f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>邮件信息</title>
+<style>
+body{{font-family:system-ui;max-width:600px;margin:40px auto;padding:0 20px;background:#f5f5f5}}
+pre{{background:#1e1e1e;color:#d4d4d4;padding:16px;border-radius:8px;overflow-x:auto;font-size:13px;line-height:1.5}}
+button{{background:#4f46e5;color:#fff;border:none;padding:12px 24px;border-radius:6px;font-size:16px;cursor:pointer;width:100%;margin-top:12px}}
+button:active{{background:#4338ca}}
+.ok{{background:#16a34a}}
+</style></head><body>
+<pre id="info">{formatted}</pre>
+<button onclick="copyInfo()">一键复制</button>
+<script>
+function copyInfo(){{
+  const text=document.getElementById('info').textContent;
+  navigator.clipboard.writeText(text).then(()=>{{
+    const btn=document.querySelector('button');
+    btn.textContent='已复制 ✓';btn.classList.add('ok');
+    setTimeout(()=>{{btn.textContent='一键复制';btn.classList.remove('ok')}},2000);
+  }});
+}}
+</script></body></html>"""
 
 
 @app.get("/health")
