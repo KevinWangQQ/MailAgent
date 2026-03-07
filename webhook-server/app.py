@@ -153,6 +153,39 @@ async def handle_notion_webhook(
     return {"ok": True, "queue": queue_key, "event_id": message["id"]}
 
 
+@app.get("/api/command/{event_id}/result")
+async def get_command_result(
+    event_id: str,
+    request: Request,
+    wait: int = Query(default=0, ge=0, le=60, description="Long-poll seconds (0=immediate)"),
+):
+    """查询指令执行结果
+
+    本地 MailAgent 执行完成后将结果写入 Redis，通过此端点轮询获取。
+    ?wait=30 表示最多等待 30 秒（长轮询），0 表示立即返回。
+    """
+    if WEBHOOK_SECRET:
+        auth = request.headers.get("Authorization", "")
+        token = request.headers.get("X-Webhook-Token", "")
+        if auth != f"Bearer {WEBHOOK_SECRET}" and token != WEBHOOK_SECRET:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
+    key = f"mailagent:results:{event_id}"
+    raw = await redis_pool.get(key)
+    if raw:
+        return json.loads(raw)
+    if wait <= 0:
+        return {"status": "pending"}
+
+    import asyncio
+    for _ in range(wait):
+        await asyncio.sleep(1)
+        raw = await redis_pool.get(key)
+        if raw:
+            return json.loads(raw)
+    return {"status": "pending"}
+
+
 @app.get("/copy", response_class=HTMLResponse)
 async def copy_info(d: str = Query(..., description="Base64 encoded JSON")):
     """一键复制邮件信息页面"""

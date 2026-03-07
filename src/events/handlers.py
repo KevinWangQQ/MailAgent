@@ -12,7 +12,7 @@ Webhook 事件处理器
 import asyncio
 import json
 import os
-from typing import Dict, Optional
+from typing import Callable, Awaitable, Dict, Optional
 from loguru import logger
 
 from src.mail.applescript_arm import AppleScriptArm
@@ -32,11 +32,13 @@ class EventHandlers:
         sync_store: SyncStore,
         feishu: Optional[FeishuNotifier] = None,
         notion_sync: Optional[NotionSync] = None,
+        result_callback: Optional[Callable[[str, Dict], Awaitable[None]]] = None,
     ):
         self.arm = arm
         self.sync_store = sync_store
         self.feishu = feishu
         self.notion_sync = notion_sync
+        self._result_callback = result_callback
 
     async def handle_flag_changed(self, event: Dict):
         """处理 flag 变化事件: Notion → Mail.app"""
@@ -184,6 +186,7 @@ class EventHandlers:
     async def handle_create_draft(self, event: Dict):
         """创建 Mail.app 回复草稿（Notion 按钮 / Openclaw 触发）"""
         props = event.get("properties", {})
+        event_id = event.get("id", "")
         page_id = event.get("page_id", "")
         message_id = props.get("message_id", "")
         reply_suggestion = props.get("reply_suggestion", "")
@@ -191,6 +194,7 @@ class EventHandlers:
 
         if not reply_suggestion:
             logger.warning(f"create_draft: no reply_suggestion for {page_id}")
+            await self._publish(event_id, {"status": "error", "error": "no reply_suggestion"})
             return
 
         # 查找 internal_id
@@ -240,12 +244,25 @@ class EventHandlers:
                     await self.notion_sync.update_page_mail_sync_status(
                         page_id, synced=True, processing_status="草稿已创建"
                     )
+                await self._publish(event_id, {"status": "success", **result})
             else:
-                logger.error(f"Draft script failed (rc={proc.returncode}): {stderr.decode()[:200]}")
+                error = stderr.decode()[:200]
+                logger.error(f"Draft script failed (rc={proc.returncode}): {error}")
+                await self._publish(event_id, {"status": "error", "error": error})
         except asyncio.TimeoutError:
             logger.error(f"Draft script timeout for {message_id[:40]}")
+            await self._publish(event_id, {"status": "error", "error": "timeout"})
         except Exception as e:
             logger.error(f"Draft creation error: {e}")
+            await self._publish(event_id, {"status": "error", "error": str(e)})
+
+    async def _publish(self, event_id: str, result: Dict):
+        """发布事件执行结果到 Redis"""
+        if event_id and self._result_callback:
+            try:
+                await self._result_callback(event_id, result)
+            except Exception as e:
+                logger.warning(f"Failed to publish result for {event_id}: {e}")
 
     async def handle_page_updated(self, event: Dict):
         """通用事件: 根据内容自动判断"""

@@ -98,3 +98,10 @@ class RedisConsumer:
 
     def get_stats(self) -> Dict:
         return {**self._stats, "queue": self.queue_key, "running": self._running}
+
+    async def publish_result(self, event_id: str, result: Dict):
+        """将事件执行结果写入 Redis，供 webhook-server 轮询"""
+        if not self._pool:
+            return
+        key = f"mailagent:results:{event_id}"
+        await self._pool.set(key, json.dumps(result, ensure_ascii=False), ex=3600)

@@ -56,6 +56,7 @@ class EmailNotionSyncApp:
                 sync_store=self.watcher.sync_store,
                 feishu=feishu,
                 notion_sync=self.watcher.notion_sync,
+                result_callback=self.redis_consumer.publish_result,
             )
 
             self.redis_consumer.on("flag_changed", handlers.handle_flag_changed)
