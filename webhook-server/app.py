@@ -387,7 +387,6 @@ def parse_properties(raw_props: Dict[str, Any]) -> Dict[str, Any]:
             if raw_items:
                 result[out_key] = raw_items
     return result
-    return result
 
 
 def _check_auth(request: Request):

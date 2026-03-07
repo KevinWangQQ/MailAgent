@@ -185,6 +185,9 @@ class EventHandlers:
 
     async def handle_create_draft(self, event: Dict):
         """创建 Mail.app 回复草稿（Notion 按钮 / Openclaw 触发）"""
+        import time as _time
+        _t0 = _time.monotonic()
+
         props = event.get("properties", {})
         event_id = event.get("id", "")
         page_id = event.get("page_id", "")
@@ -192,6 +195,13 @@ class EventHandlers:
         reply_suggestion = props.get("reply_suggestion", "")
         reply_suggestion_rich = props.get("reply_suggestion_rich")
         mailbox = props.get("mailbox", "收件箱")
+        event_source = event.get("source", "webhook")
+
+        logger.info(
+            f"create_draft: start | source={event_source} page={page_id[:12]} "
+            f"has_rich={reply_suggestion_rich is not None} has_md={bool(reply_suggestion)} "
+            f"md_len={len(reply_suggestion)} mailbox={mailbox}"
+        )
 
         if not reply_suggestion and not reply_suggestion_rich:
             logger.warning(f"create_draft: no reply_suggestion for {page_id}")
@@ -211,9 +221,9 @@ class EventHandlers:
         clipboard_py = os.path.join(script_path, "html_clipboard.py")
 
         if reply_suggestion_rich:
-            # Notion raw blocks → HTML（无损，单次转换）
             from src.converter.notion_rich_text import rich_text_to_html
             html = rich_text_to_html(reply_suggestion_rich)
+            logger.info(f"create_draft: path=rich_text items={len(reply_suggestion_rich)} html_len={len(html)}")
             proc_clip = await asyncio.create_subprocess_exec(
                 "python3", clipboard_py, "--set-html",
                 stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
@@ -221,13 +231,16 @@ class EventHandlers:
             await proc_clip.communicate(input=html.encode())
             clipboard_ready = proc_clip.returncode == 0
         elif reply_suggestion:
-            # Markdown → HTML → clipboard
+            logger.info(f"create_draft: path=markdown md_len={len(reply_suggestion)}")
             proc_clip = await asyncio.create_subprocess_exec(
                 "python3", clipboard_py,
                 stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
             )
             await proc_clip.communicate(input=reply_suggestion.encode())
             clipboard_ready = proc_clip.returncode == 0
+
+        _t1 = _time.monotonic()
+        logger.info(f"create_draft: clipboard_ready={clipboard_ready} took={_t1 - _t0:.1f}s")
 
         # 构建脚本参数
         mode = props.get("mode", "reply-all")
@@ -264,7 +277,8 @@ class EventHandlers:
             if proc.returncode == 0:
                 result = json.loads(output) if output else {}
                 method = result.get("method", "unknown")
-                logger.info(f"Draft created: {method} for {message_id[:40]}")
+                _t2 = _time.monotonic()
+                logger.info(f"create_draft: done | method={method} total={_t2 - _t0:.1f}s msg={message_id[:40]}")
 
                 # 更新 Notion Processing Status
                 if page_id and self.notion_sync:
