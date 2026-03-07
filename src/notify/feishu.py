@@ -28,10 +28,12 @@ class FeishuNotifier:
         chat_id: str = "",
         webhook_url: str = "",
         secret: str = "",
+        database_id: str = "",
     ):
         self.app_id = app_id
         self.app_secret = app_secret
         self.chat_id = chat_id
+        self._database_id = database_id
         # webhook 作为 fallback
         self.webhook_url = webhook_url
         self.webhook_secret = secret
@@ -102,6 +104,8 @@ class FeishuNotifier:
         message_id = page_info.get("message_id", "")
         category = page_info.get("category", "")
         reply_suggestion = page_info.get("reply_suggestion", "")
+        to_addr = page_info.get("to_addr", "")
+        cc_addr = page_info.get("cc_addr", "")
 
         notion_url = f"https://notion.so/{page_id.replace('-', '')}" if page_id else ""
         template = "red" if ai_priority in ("🔴 紧急",) else "orange"
@@ -114,6 +118,8 @@ class FeishuNotifier:
             notion_url=notion_url, template=template,
             page_id=page_id, message_id=message_id,
             row_id=row_id, from_email=from_email,
+            to_addr=to_addr, cc_addr=cc_addr,
+            mailbox=mailbox,
         )
 
         if self._use_app_api:
@@ -135,6 +141,9 @@ class FeishuNotifier:
         message_id = kw["message_id"]
         row_id = kw["row_id"]
         from_email = kw["from_email"]
+        to_addr = kw.get("to_addr", "")
+        cc_addr = kw.get("cc_addr", "")
+        mailbox = kw.get("mailbox", "")
 
         elements = [
             {
@@ -223,18 +232,24 @@ class FeishuNotifier:
                 "url": notion_url
             })
 
-        # 「✨ 优化回复」— Openclaw 检索上下文后生成高质量回复
+        # 按钮回调公共字段
         base_callback = {
-            "message_id": message_id, "page_id": page_id,
-            "subject": subject, "from_email": from_email,
-            "from_name": sender_display, "notion_url": notion_url,
+            "row_id": row_id, "page_id": page_id,
+            "database_id": self._database_id,
+            "message_id": message_id, "notion_url": notion_url,
+            "subject": subject, "mailbox": mailbox,
+            "from_email": from_email, "from_name": sender_display,
+            "to": to_addr, "cc": cc_addr,
+            "date": date_str,
+            "ai_action": ai_action, "ai_priority": ai_priority,
         }
         actions.append({
             "tag": "button",
             "text": {"content": "✨ 优化回复", "tag": "plain_text"},
             "type": "primary",
             "value": {**base_callback, "action": "enhance_reply",
-                      "ai_summary": (ai_summary or "")[:300]}
+                      "ai_summary": (ai_summary or "")[:500],
+                      "reply_suggestion": (reply_suggestion or "")[:800]}
         })
 
         # 「📝 创建草稿」— 基于现有建议回复直接生成 Mail.app 草稿
@@ -244,7 +259,7 @@ class FeishuNotifier:
                 "text": {"content": "📝 创建草稿", "tag": "plain_text"},
                 "type": "default",
                 "value": {**base_callback, "action": "create_draft",
-                          "reply_suggestion": reply_suggestion[:500]}
+                          "reply_suggestion": reply_suggestion[:800]}
             })
 
         if actions:

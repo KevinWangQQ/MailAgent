@@ -1076,6 +1076,19 @@ class NotionSync:
                     from_prop = props.get("From", {})
                     from_email = from_prop.get("email", "") or ""
 
+                    # 提取 To / CC (rich_text)
+                    to_addr = ""
+                    to_prop = props.get("To", {})
+                    to_texts = to_prop.get("rich_text", [])
+                    if to_texts:
+                        to_addr = "".join(t.get("text", {}).get("content", "") for t in to_texts)
+
+                    cc_addr = ""
+                    cc_prop = props.get("CC", {})
+                    cc_texts = cc_prop.get("rich_text", [])
+                    if cc_texts:
+                        cc_addr = "".join(t.get("text", {}).get("content", "") for t in cc_texts)
+
                     # 提取 Date
                     date_str = ""
                     date_prop = props.get("Date", {})
@@ -1130,6 +1143,8 @@ class NotionSync:
                         "subject": subject,
                         "from_name": from_name,
                         "from_email": from_email,
+                        "to_addr": to_addr,
+                        "cc_addr": cc_addr,
                         "date": date_str,
                         "ai_priority": ai_priority,
                         "mailbox": mailbox,

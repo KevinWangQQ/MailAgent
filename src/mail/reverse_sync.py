@@ -53,6 +53,7 @@ class NotionToMailSync:
                 chat_id=config.feishu_chat_id,
                 webhook_url=config.feishu_webhook_url,
                 secret=config.feishu_webhook_secret,
+                database_id=config.email_database_id,
             )
             mode = "app_api" if config.feishu_app_id else "webhook"
             logger.info(f"Feishu notification enabled (mode={mode})")
