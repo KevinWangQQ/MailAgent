@@ -226,7 +226,7 @@ class FeishuNotifier:
             "subject": subject, "mailbox": mailbox,
             "from_email": from_email, "from_name": sender_display,
             "to": to_addr, "cc": cc_addr,
-            "date": date_str,
+            "date": date_str, "category": category,
             "chat_id": self.chat_id,
             "ai_action": ai_action, "ai_priority": ai_priority,
         }
@@ -259,6 +259,7 @@ class FeishuNotifier:
             elements.append({"tag": "action", "actions": actions})
 
         return {
+            "config": {"update_multi": True},
             "header": {
                 "title": {"content": f"📬 {ai_action or '需要处理'}", "tag": "plain_text"},
                 "template": template,
