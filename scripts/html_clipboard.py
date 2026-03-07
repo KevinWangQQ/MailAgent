@@ -47,6 +47,11 @@ def md_to_html(text: str, font_size: int = 14) -> str:
             html_lines.append("<br>")
             continue
 
+        # 水平线
+        if re.match(r'^-{3,}$', stripped):
+            html_lines.append("<hr style='border:none;border-top:1px solid #ccc;margin:12px 0'>")
+            continue
+
         # 引用
         if stripped.startswith("> "):
             content = _inline_format(stripped[2:])
@@ -65,7 +70,7 @@ def md_to_html(text: str, font_size: int = 14) -> str:
             continue
 
         # 普通段落
-        html_lines.append(_inline_format(stripped))
+        html_lines.append(f"{_inline_format(stripped)}<br>")
 
     if in_list:
         html_lines.append("</ul>")
@@ -77,10 +82,13 @@ def md_to_html(text: str, font_size: int = 14) -> str:
 
 
 def _inline_format(text: str) -> str:
-    """处理行内格式：加粗、斜体、行内代码"""
+    """处理行内格式：加粗、斜体、行内代码、链接、删除线"""
+    text = re.sub(r'`(.+?)`', r"<code style='background:#f0f0f0;padding:1px 4px;border-radius:3px'>\1</code>", text)
+    text = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<a href="\2" style="color:#1a73e8">\1</a>', text)
+    text = re.sub(r'\*\*\*(.+?)\*\*\*', r'<b><i>\1</i></b>', text)
     text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
     text = re.sub(r'\*(.+?)\*', r'<i>\1</i>', text)
-    text = re.sub(r'`(.+?)`', r"<code style='background:#f0f0f0;padding:1px 4px;border-radius:3px'>\1</code>", text)
+    text = re.sub(r'~~(.+?)~~', r'<s>\1</s>', text)
     return text
 
 

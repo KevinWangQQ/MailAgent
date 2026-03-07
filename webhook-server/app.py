@@ -262,6 +262,11 @@ def _extract_text(prop: Dict) -> str:
 
 def _extract_rich_text(prop: Dict) -> str:
     """Extract rich text preserving formatting as Markdown."""
+    _color_map = {
+        "gray": "#787774", "brown": "#9F6B53", "orange": "#D9730D",
+        "yellow": "#CB912F", "green": "#448361", "blue": "#337EA9",
+        "purple": "#9065B0", "pink": "#C14C8A", "red": "#D44C47",
+    }
     for key in ("title", "rich_text"):
         items = prop.get(key, [])
         if not items:
@@ -286,6 +291,11 @@ def _extract_rich_text(prop: Dict) -> str:
                     text = f"~~{text}~~"
             if link and link.get("url"):
                 text = f"[{text}]({link['url']})"
+            color = ann.get("color", "default")
+            if color != "default" and not color.endswith("_background"):
+                css_color = _color_map.get(color, "")
+                if css_color:
+                    text = f'<span style="color:{css_color}">{text}</span>'
             parts.append(text)
         return "".join(parts)
     return ""
