@@ -223,23 +223,28 @@ class FeishuNotifier:
                 "url": notion_url
             })
 
-        # 快捷回复按钮（回调到 Openclaw）
-        needs_reply = ai_action in ("需要回复", "需要决策")
-        if needs_reply and reply_suggestion:
+        # 「✨ 优化回复」— Openclaw 检索上下文后生成高质量回复
+        base_callback = {
+            "message_id": message_id, "page_id": page_id,
+            "subject": subject, "from_email": from_email,
+            "from_name": sender_display, "notion_url": notion_url,
+        }
+        actions.append({
+            "tag": "button",
+            "text": {"content": "✨ 优化回复", "tag": "plain_text"},
+            "type": "primary",
+            "value": {**base_callback, "action": "enhance_reply",
+                      "ai_summary": (ai_summary or "")[:300]}
+        })
+
+        # 「📝 创建草稿」— 基于现有建议回复直接生成 Mail.app 草稿
+        if reply_suggestion:
             actions.append({
                 "tag": "button",
-                "text": {"content": "✏️ 快捷回复", "tag": "plain_text"},
-                "type": "primary",
-                "value": {
-                    "action": "quick_reply",
-                    "message_id": message_id,
-                    "subject": subject,
-                    "from_email": from_email,
-                    "from_name": sender_display,
-                    "reply_suggestion": reply_suggestion[:500],
-                    "page_id": page_id,
-                    "notion_url": notion_url,
-                }
+                "text": {"content": "📝 创建草稿", "tag": "plain_text"},
+                "type": "default",
+                "value": {**base_callback, "action": "create_draft",
+                          "reply_suggestion": reply_suggestion[:500]}
             })
 
         if actions:
