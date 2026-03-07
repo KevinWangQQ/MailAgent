@@ -75,6 +75,6 @@ def rich_text_to_html(items: list, font_size: int = 14) -> str:
         parts.append(text)
 
     body = "".join(parts)
-    body = re.sub(r'(<br>)+(<pre\b)', r'\2', body)
-    body = re.sub(r'(</pre>)(<br>)+', r'\1', body)
+    body = re.sub(r'(<br>){2,}(<pre\b)', r'<br>\2', body)
+    body = re.sub(r'(</pre>)(<br>){2,}', r'\1<br>', body)
     return f"<div style='font-family:system-ui,-apple-system;font-size:{font_size}px;line-height:1.6'>{body}</div>"
