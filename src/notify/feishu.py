@@ -213,7 +213,7 @@ class FeishuNotifier:
         if notion_url:
             actions.append({
                 "tag": "button",
-                "text": {"content": "打开 Notion", "tag": "plain_text"},
+                "text": {"content": "📬 打开邮件", "tag": "plain_text"},
                 "type": "default",
                 "url": notion_url
             })
@@ -239,7 +239,6 @@ class FeishuNotifier:
                       "reply_suggestion": (reply_suggestion or "")[:800]}
         })
 
-        # 「📝 创建草稿」— 基于现有建议回复直接生成 Mail.app 草稿
         if reply_suggestion:
             actions.append({
                 "tag": "button",
@@ -248,6 +247,13 @@ class FeishuNotifier:
                 "value": {**base_callback, "action": "create_draft",
                           "reply_suggestion": reply_suggestion[:800]}
             })
+
+        actions.append({
+            "tag": "button",
+            "text": {"content": "✅ 已完成", "tag": "plain_text"},
+            "type": "default",
+            "value": {**base_callback, "action": "mark_completed"}
+        })
 
         if actions:
             elements.append({"tag": "action", "actions": actions})

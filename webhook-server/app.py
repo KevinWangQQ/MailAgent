@@ -260,6 +260,37 @@ def _extract_text(prop: Dict) -> str:
     return ""
 
 
+def _extract_rich_text(prop: Dict) -> str:
+    """Extract rich text preserving formatting as Markdown."""
+    for key in ("title", "rich_text"):
+        items = prop.get(key, [])
+        if not items:
+            continue
+        parts = []
+        for item in items:
+            text = item.get("text", {}).get("content", "")
+            if not text:
+                continue
+            ann = item.get("annotations", {})
+            link = item.get("text", {}).get("link")
+            if ann.get("code"):
+                text = f"`{text}`"
+            else:
+                if ann.get("bold") and ann.get("italic"):
+                    text = f"***{text}***"
+                elif ann.get("bold"):
+                    text = f"**{text}**"
+                elif ann.get("italic"):
+                    text = f"*{text}*"
+                if ann.get("strikethrough"):
+                    text = f"~~{text}~~"
+            if link and link.get("url"):
+                text = f"[{text}]({link['url']})"
+            parts.append(text)
+        return "".join(parts)
+    return ""
+
+
 def _extract_select(prop: Dict) -> str:
     sel = prop.get("select")
     return sel.get("name", "") if sel else ""
@@ -295,8 +326,8 @@ def parse_properties(raw_props: Dict[str, Any]) -> Dict[str, Any]:
         "Processing Status": ("ai_review_status", _extract_select),
         "Mailbox": ("mailbox", _extract_select),
         "Category": ("category", _extract_select),
-        "AI Summary": ("ai_summary", _extract_text),
-        "Reply Suggestion": ("reply_suggestion", _extract_text),
+        "AI Summary": ("ai_summary", _extract_rich_text),
+        "Reply Suggestion": ("reply_suggestion", _extract_rich_text),
     }
     for notion_key, (out_key, extractor) in field_map.items():
         prop = raw_props.get(notion_key)
