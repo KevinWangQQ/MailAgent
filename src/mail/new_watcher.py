@@ -93,7 +93,7 @@ class NewWatcher:
 
         # 初始化组件（带错误检查）
         try:
-            self.radar = SQLiteRadar(mailboxes=self.mailboxes)
+            self.radar = SQLiteRadar(mailboxes=self.mailboxes, account_url_prefix=settings.mail_account_url_prefix)
             if not self.radar.is_available():
                 logger.warning("SQLite radar not available, will rely on AppleScript only")
         except Exception as e:

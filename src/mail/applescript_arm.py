@@ -401,7 +401,7 @@ class AppleScriptArm:
         end tell
         '''
 
-        result = self._execute_script(script, timeout=30)
+        result = self._execute_script(script, timeout=self.timeout)
         success = result is not None and "OK" in result
 
         if success:
@@ -443,7 +443,7 @@ class AppleScriptArm:
         end tell
         '''
 
-        result = self._execute_script(script, timeout=30)
+        result = self._execute_script(script, timeout=self.timeout)
         success = result is not None and "OK" in result
 
         if success:

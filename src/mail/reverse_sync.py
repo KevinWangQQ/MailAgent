@@ -14,6 +14,7 @@ from loguru import logger
 
 from src.mail.applescript_arm import AppleScriptArm
 from src.mail.sync_store import SyncStore
+from src.mail.sqlite_radar import SQLiteRadar
 from src.notion.sync import NotionSync
 from src.config import config
 
@@ -143,14 +144,25 @@ class NotionToMailSync:
         return success
 
     def _lookup_internal_id(self, message_id: str) -> Optional[int]:
-        if not self.sync_store:
-            return None
+        # 1. SyncStore 查找
+        if self.sync_store:
+            try:
+                record = self.sync_store.get_by_message_id(message_id)
+                if record:
+                    iid = record.internal_id if hasattr(record, 'internal_id') else record.get('internal_id')
+                    if iid:
+                        return iid
+            except Exception:
+                pass
+
+        # 2. Fallback: 直接查 Mail.app SQLite Envelope Index（毫秒级）
         try:
-            record = self.sync_store.get_by_message_id(message_id)
-            if record:
-                return record.internal_id if hasattr(record, 'internal_id') else record.get('internal_id')
-        except Exception:
-            pass
+            radar = SQLiteRadar(account_url_prefix=config.mail_account_url_prefix)
+            if radar.db_path:
+                return radar.lookup_internal_id_by_message_id(message_id)
+        except Exception as e:
+            logger.debug(f"Envelope Index fallback failed: {e}")
+
         return None
 
     def _do_mark_read(self, internal_id: Optional[int], message_id: str, mailbox: str = None) -> bool:

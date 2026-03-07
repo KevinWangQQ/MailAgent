@@ -12,6 +12,7 @@ class Config(BaseSettings):
     # 用户配置
     user_email: str = Field(..., env="USER_EMAIL")
     mail_account_name: str = Field(default="Exchange", env="MAIL_ACCOUNT_NAME")
+    mail_account_url_prefix: str = Field(default="ews://", env="MAIL_ACCOUNT_URL_PREFIX", description="SQLite 账户 URL 前缀过滤（如 ews:// 只匹配 Exchange）")
     mail_inbox_name: str = Field(default="收件箱", env="MAIL_INBOX_NAME")
 
     # 日志配置

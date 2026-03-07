@@ -31,14 +31,16 @@ class SQLiteRadar:
     - Triggers AppleScript fetch when changes detected
     """
 
-    def __init__(self, mailboxes: List[str] = None):
+    def __init__(self, mailboxes: List[str] = None, account_url_prefix: str = ""):
         """Initialize the SQLite radar.
 
         Args:
             mailboxes: List of mailbox names to monitor. Default: ["收件箱"]
+            account_url_prefix: 账户 URL 前缀过滤（如 "ews://" 只匹配 Exchange 账户）
         """
         self.db_path = self._find_db_path()
         self.mailboxes = mailboxes or ["收件箱"]
+        self.account_url_prefix = account_url_prefix
         self._last_max_row_id: int = 0
 
         if self.db_path:
@@ -128,10 +130,13 @@ class SQLiteRadar:
         for mailbox in self.mailboxes:
             patterns = get_sqlite_patterns(mailbox)
             for pattern in patterns:
-                # Validate pattern only contains expected characters
-                # (alphanumeric, %, _, -, and URL encoding characters)
                 if pattern and all(c.isalnum() or c in '%_-' for c in pattern):
-                    conditions.append(f"mb.url LIKE '%{pattern}%'")
+                    cond = f"mb.url LIKE '%{pattern}%'"
+                    # 账户级过滤：只匹配指定 URL 前缀的账户
+                    if self.account_url_prefix:
+                        prefix = self.account_url_prefix.replace("'", "''")
+                        cond = f"(mb.url LIKE '{prefix}%' AND mb.url LIKE '%{pattern}%')"
+                    conditions.append(cond)
                 else:
                     logger.warning(f"Skipping invalid mailbox pattern: {pattern}")
 
@@ -373,6 +378,38 @@ class SQLiteRadar:
         except Exception as e:
             logger.error(f"Failed to get recent flags: {e}")
             return {}
+
+    def lookup_internal_id_by_message_id(self, message_id: str) -> Optional[int]:
+        """通过 message_id 在 Envelope Index 中查找 internal_id（ROWID）
+
+        用于反向同步时 SyncStore 中找不到记录的 fallback。
+        """
+        if not self.db_path or not message_id:
+            return None
+
+        try:
+            with self._connection() as conn:
+                cursor = conn.cursor()
+                mailbox_filter = self._build_mailbox_filter()
+                # message_global_data.message_id_header 带尖括号
+                header = f"<{message_id}>" if not message_id.startswith("<") else message_id
+                cursor.execute(f"""
+                    SELECT m.ROWID as internal_id
+                    FROM messages m
+                    JOIN message_global_data mgd ON m.message_id = mgd.message_id
+                    LEFT JOIN mailboxes mb ON m.mailbox = mb.ROWID
+                    WHERE mgd.message_id_header = ?
+                      AND m.deleted = 0
+                      AND {mailbox_filter}
+                    LIMIT 1
+                """, (header,))
+                row = cursor.fetchone()
+                if row:
+                    return row['internal_id']
+        except Exception as e:
+            logger.debug(f"lookup_internal_id_by_message_id failed: {e}")
+
+        return None
 
     def _parse_mailbox_url(self, url: str) -> str:
         """解析 mailbox URL 提取中文邮箱名称
