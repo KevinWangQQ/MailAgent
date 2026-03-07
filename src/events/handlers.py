@@ -278,9 +278,11 @@ class EventHandlers:
                 await self._publish(event_id, {"status": "error", "error": error})
         except asyncio.TimeoutError:
             logger.error(f"Draft script timeout for {message_id[:40]}")
+            await self._close_mail_window()
             await self._publish(event_id, {"status": "error", "error": "timeout"})
         except Exception as e:
             logger.error(f"Draft creation error: {e}")
+            await self._close_mail_window()
             await self._publish(event_id, {"status": "error", "error": str(e)})
 
     async def _publish(self, event_id: str, result: Dict):
@@ -290,6 +292,19 @@ class EventHandlers:
                 await self._result_callback(event_id, result)
             except Exception as e:
                 logger.warning(f"Failed to publish result for {event_id}: {e}")
+
+    @staticmethod
+    async def _close_mail_window():
+        """关闭 Mail.app 残留的回复窗口"""
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "osascript", "-e",
+                'tell application "Mail"\ntry\nclose front window\nend try\nend tell',
+                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+            )
+            await asyncio.wait_for(proc.wait(), timeout=5)
+        except Exception:
+            pass
 
     async def handle_page_updated(self, event: Dict):
         """通用事件: 根据内容自动判断"""

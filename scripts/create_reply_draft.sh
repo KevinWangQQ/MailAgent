@@ -52,6 +52,20 @@ SCREENSHOT_DIR="/tmp/mail-drafts"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EXTRA_TO=""
 EXTRA_CC=""
+_REPLY_WINDOW_OPEN=false
+
+# 失败时关闭残留的回复窗口
+_cleanup_on_error() {
+  local rc=$?
+  if [[ $rc -ne 0 && "$_REPLY_WINDOW_OPEN" == "true" ]]; then
+    osascript -e 'tell application "Mail"
+      try
+        close front window
+      end try
+    end tell' 2>/dev/null
+  fi
+}
+trap '_cleanup_on_error' EXIT
 
 # 解析参数
 while [[ $# -gt 0 ]]; do
@@ -243,7 +257,9 @@ do_reply() {
     " 2>&1)
     if [[ "$RESULT" == "ok" ]]; then
       sleep 2
+      _REPLY_WINDOW_OPEN=true
       paste_and_save "$(printf '%s' "$REPLY_TEXT")"
+      _REPLY_WINDOW_OPEN=false
       output_result "true" "${method_suffix}_internal_id"
       return 0
     fi
@@ -268,7 +284,9 @@ do_reply() {
     " 2>&1)
     if [[ "$RESULT" == "ok" ]]; then
       sleep 2
+      _REPLY_WINDOW_OPEN=true
       paste_and_save "$(printf '%s' "$REPLY_TEXT")"
+      _REPLY_WINDOW_OPEN=false
       output_result "true" "${method_suffix}_message_id"
       return 0
     fi
