@@ -121,6 +121,7 @@ class NotionToMailSync:
         logger.info(f"Syncing to Mail: {msg_short} action={ai_action}")
 
         internal_id = self._lookup_internal_id(message_id)
+        page["internal_id"] = internal_id  # 注入供通知回调使用
 
         # 邮件已不在 Mail.app 中（被删除/移动），直接标记已同步
         if not internal_id:

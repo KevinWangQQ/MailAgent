@@ -101,6 +101,7 @@ class FeishuNotifier:
         page_id = page_info.get("page_id", "")
         ai_summary = page_info.get("ai_summary", "")
         row_id = page_info.get("row_id")
+        internal_id = page_info.get("internal_id")
         message_id = page_info.get("message_id", "")
         category = page_info.get("category", "")
         reply_suggestion = page_info.get("reply_suggestion", "")
@@ -117,7 +118,8 @@ class FeishuNotifier:
             ai_summary=ai_summary, reply_suggestion=reply_suggestion,
             notion_url=notion_url, template=template,
             page_id=page_id, message_id=message_id,
-            row_id=row_id, from_email=from_email,
+            row_id=row_id, internal_id=internal_id,
+            from_email=from_email,
             to_addr=to_addr, cc_addr=cc_addr,
             mailbox=mailbox,
         )
@@ -140,6 +142,7 @@ class FeishuNotifier:
         page_id = kw["page_id"]
         message_id = kw["message_id"]
         row_id = kw["row_id"]
+        internal_id = kw.get("internal_id")
         from_email = kw["from_email"]
         to_addr = kw.get("to_addr", "")
         cc_addr = kw.get("cc_addr", "")
@@ -205,10 +208,12 @@ class FeishuNotifier:
 
         # 完整信息折叠面板
         info_data = {
-            "row_id": row_id, "page_id": page_id, "message_id": message_id,
+            "internal_id": internal_id, "page_id": page_id,
+            "database_id": self._database_id, "message_id": message_id,
             "subject": subject, "from": sender_display, "from_email": from_email,
-            "date": date_str, "action": ai_action, "priority": ai_priority,
-            "category": category,
+            "to": to_addr, "cc": cc_addr,
+            "date": date_str, "mailbox": mailbox,
+            "action": ai_action, "priority": ai_priority, "category": category,
             "summary": ai_summary[:200] if ai_summary else "",
             "reply_suggestion": reply_suggestion[:300] if reply_suggestion else "",
             "notion_url": notion_url,
@@ -234,7 +239,7 @@ class FeishuNotifier:
 
         # 按钮回调公共字段
         base_callback = {
-            "row_id": row_id, "page_id": page_id,
+            "internal_id": internal_id, "page_id": page_id,
             "database_id": self._database_id,
             "message_id": message_id, "notion_url": notion_url,
             "subject": subject, "mailbox": mailbox,
