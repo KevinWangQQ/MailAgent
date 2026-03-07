@@ -1097,6 +1097,25 @@ class NotionSync:
                     if mailbox_sel:
                         mailbox = mailbox_sel.get("name", "")
 
+                    # 提取 AI Summary
+                    ai_summary = ""
+                    summary_prop = props.get("AI Summary", {})
+                    summary_texts = summary_prop.get("rich_text", [])
+                    if summary_texts:
+                        ai_summary = "".join(t.get("text", {}).get("content", "") for t in summary_texts)
+
+                    # 提取 ID (number)
+                    row_id = None
+                    id_prop = props.get("ID", {})
+                    row_id = id_prop.get("number")
+
+                    # 提取 Category
+                    category = ""
+                    cat_prop = props.get("Category", {})
+                    cat_sel = cat_prop.get("select")
+                    if cat_sel:
+                        category = cat_sel.get("name", "")
+
                     pages.append({
                         "page_id": page["id"],
                         "message_id": message_id,
@@ -1107,6 +1126,9 @@ class NotionSync:
                         "date": date_str,
                         "ai_priority": ai_priority,
                         "mailbox": mailbox,
+                        "ai_summary": ai_summary,
+                        "row_id": row_id,
+                        "category": category,
                     })
 
                 has_more = results.get("has_more", False)
