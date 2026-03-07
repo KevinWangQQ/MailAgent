@@ -105,7 +105,13 @@ def set_html_clipboard(html: str):
 
 
 if __name__ == "__main__":
-    text = sys.stdin.read()
-    font_size = int(sys.argv[1]) if len(sys.argv) > 1 else 14
-    html = md_to_html(text, font_size)
-    set_html_clipboard(html)
+    if "--set-html" in sys.argv:
+        # Pre-converted HTML: just set clipboard
+        html = sys.stdin.read()
+        set_html_clipboard(html)
+    else:
+        # Markdown → HTML → clipboard
+        text = sys.stdin.read()
+        font_size = int(sys.argv[1]) if len(sys.argv) > 1 else 14
+        html = md_to_html(text, font_size)
+        set_html_clipboard(html)

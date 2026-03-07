@@ -46,6 +46,7 @@ REPLY_TEXT=""
 MAILBOX="收件箱"
 ACCOUNT="Exchange"
 SCREENSHOT=false
+CLIPBOARD_READY=false
 SELF_EMAILS="lucien.chen@tp-link.com,yuanquan.chen@tp-link.com"
 SCREENSHOT_DIR="/tmp/mail-drafts"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -67,6 +68,7 @@ while [[ $# -gt 0 ]]; do
     --account) ACCOUNT="$2"; shift 2 ;;
     --extra-to) EXTRA_TO="$2"; shift 2 ;;
     --extra-cc) EXTRA_CC="$2"; shift 2 ;;
+    --clipboard-ready) CLIPBOARD_READY=true; shift ;;
     --screenshot) SCREENSHOT=true; shift ;;
     *) echo "Unknown arg: $1" >&2; exit 1 ;;
   esac
@@ -173,8 +175,10 @@ capture_screenshot() {
 # System Events 粘贴内容 + 截图 + 保存关闭
 paste_and_save() {
   local text="$1"
-  # 设置 HTML 富文本剪贴板（Markdown → HTML → NSPasteboard）
-  printf '%s' "$text" | python3 "$SCRIPT_DIR/html_clipboard.py"
+  # 设置 HTML 富文本剪贴板（跳过如果 handler 已预设）
+  if [[ "$CLIPBOARD_READY" != "true" ]]; then
+    printf '%s' "$text" | python3 "$SCRIPT_DIR/html_clipboard.py"
+  fi
   osascript <<'ASEOF'
 tell application "Mail" to activate
 delay 1

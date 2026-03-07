@@ -319,6 +319,15 @@ def _extract_date(prop: Dict) -> str:
     return d.get("start", "") if d else ""
 
 
+def _extract_raw_rich_text(prop: Dict) -> list:
+    """Extract raw Notion rich_text items for local HTML conversion."""
+    for key in ("title", "rich_text"):
+        items = prop.get(key, [])
+        if items:
+            return items
+    return []
+
+
 def parse_properties(raw_props: Dict[str, Any]) -> Dict[str, Any]:
     result = {}
     field_map = {
@@ -343,6 +352,14 @@ def parse_properties(raw_props: Dict[str, Any]) -> Dict[str, Any]:
         prop = raw_props.get(notion_key)
         if prop is not None:
             result[out_key] = extractor(prop)
+    # Pass raw rich_text blocks for local HTML conversion
+    for notion_key, out_key in [("Reply Suggestion", "reply_suggestion_rich"), ("AI Summary", "ai_summary_rich")]:
+        prop = raw_props.get(notion_key)
+        if prop is not None:
+            raw_items = _extract_raw_rich_text(prop)
+            if raw_items:
+                result[out_key] = raw_items
+    return result
     return result
 
 

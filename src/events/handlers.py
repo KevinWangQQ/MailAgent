@@ -190,9 +190,10 @@ class EventHandlers:
         page_id = event.get("page_id", "")
         message_id = props.get("message_id", "")
         reply_suggestion = props.get("reply_suggestion", "")
+        reply_suggestion_rich = props.get("reply_suggestion_rich")
         mailbox = props.get("mailbox", "收件箱")
 
-        if not reply_suggestion:
+        if not reply_suggestion and not reply_suggestion_rich:
             logger.warning(f"create_draft: no reply_suggestion for {page_id}")
             await self._publish(event_id, {"status": "error", "error": "no reply_suggestion"})
             return
@@ -204,6 +205,30 @@ class EventHandlers:
             if record:
                 internal_id = record.get('internal_id') if isinstance(record, dict) else getattr(record, 'internal_id', None)
 
+        # 预设剪贴板（在 Mail.app 打开前完成 HTML 转换）
+        clipboard_ready = False
+        script_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "scripts")
+        clipboard_py = os.path.join(script_path, "html_clipboard.py")
+
+        if reply_suggestion_rich:
+            # Notion raw blocks → HTML（无损，单次转换）
+            from src.converter.notion_rich_text import rich_text_to_html
+            html = rich_text_to_html(reply_suggestion_rich)
+            proc_clip = await asyncio.create_subprocess_exec(
+                "python3", clipboard_py, "--set-html",
+                stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            )
+            await proc_clip.communicate(input=html.encode())
+            clipboard_ready = proc_clip.returncode == 0
+        elif reply_suggestion:
+            # Markdown → HTML → clipboard
+            proc_clip = await asyncio.create_subprocess_exec(
+                "python3", clipboard_py,
+                stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            )
+            await proc_clip.communicate(input=reply_suggestion.encode())
+            clipboard_ready = proc_clip.returncode == 0
+
         # 构建脚本参数
         mode = props.get("mode", "reply-all")
         extra_to = props.get("extra_to", "")
@@ -211,8 +236,10 @@ class EventHandlers:
         subject = props.get("subject", "")
         to_email = props.get("to", "") or props.get("to_email", "")
 
-        script_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "scripts", "create_reply_draft.sh")
-        cmd = ["bash", script_path, "--mode", mode, "--reply-text", reply_suggestion, "--mailbox", mailbox]
+        draft_script = os.path.join(script_path, "create_reply_draft.sh")
+        cmd = ["bash", draft_script, "--mode", mode, "--reply-text", reply_suggestion or "(rich text)", "--mailbox", mailbox]
+        if clipboard_ready:
+            cmd.append("--clipboard-ready")
         if internal_id:
             cmd.extend(["--internal-id", str(internal_id)])
         elif message_id:

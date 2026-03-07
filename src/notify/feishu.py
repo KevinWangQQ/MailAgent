@@ -236,7 +236,7 @@ class FeishuNotifier:
             "type": "primary",
             "value": {**base_callback, "action": "enhance_reply",
                       "ai_summary": (ai_summary or "")[:500],
-                      "reply_suggestion": (reply_suggestion or "")[:800]}
+                      "reply_suggestion": (reply_suggestion or "")[:1500]}
         })
 
         if reply_suggestion:
@@ -245,7 +245,7 @@ class FeishuNotifier:
                 "text": {"content": "📝 创建草稿", "tag": "plain_text"},
                 "type": "default",
                 "value": {**base_callback, "action": "create_draft",
-                          "reply_suggestion": reply_suggestion[:800]}
+                          "reply_suggestion": reply_suggestion[:1500]}
             })
 
         actions.append({
