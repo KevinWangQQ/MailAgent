@@ -9,7 +9,7 @@
 - 自动识别邮件中的会议邀请（iCalendar）并创建日程
 - AI 分类与处理（通过 Notion）
 - 双向 Flag 同步（已读/旗标状态 Mail.app ↔ Notion）
-- 飞书机器人通知（重要邮件推送）
+- 飞书应用机器人通知（重要邮件推送 + 交互式回复按钮 → Openclaw）
 - Notion Webhook → Redis → Mail.app 实时事件驱动
 
 **架构版本：v3 SQLite-First**（2026-01 优化）
@@ -125,7 +125,7 @@ tail -f logs/sync.log
 
 | 模块 | 职责 |
 |------|------|
-| `feishu.py` | 飞书自定义机器人通知（交互式卡片消息，HMAC-SHA256 签名） |
+| `feishu.py` | 飞书应用机器人通知（App Bot API + 交互式卡片按钮回调 Openclaw） |
 
 #### 事件模块 (`src/events/`)
 
@@ -299,7 +299,7 @@ Processing Status 状态流转:
 
 | Action Type | Mail.app 操作 | 飞书通知 |
 |------------|--------------|---------|
-| 需要回复/需要决策/需要Review/需要会议/需要跟进/等待响应 | 标记已读 + 设旗标 | 紧急/重要时通知 |
+| 需要回复/需要决策/需要Review/需要会议/需要跟进/等待响应 | 标记已读 + 设旗标 | 紧急/重要时推送卡片（含「✨ 优化回复」「📝 创建草稿」按钮 → Openclaw） |
 | 仅供参考/已完结 | 标记已读 | 否 |
 
 **双向完成闭环：**
@@ -419,7 +419,10 @@ CREATE TABLE thread_head_cache (
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `FEISHU_WEBHOOK_URL` | `""` | 飞书自定义机器人 webhook URL |
+| `FEISHU_APP_ID` | `""` | 飞书应用 App ID |
+| `FEISHU_APP_SECRET` | `""` | 飞书应用 App Secret |
+| `FEISHU_CHAT_ID` | `""` | 飞书群聊 chat_id |
+| `FEISHU_WEBHOOK_URL` | `""` | 飞书自定义机器人 webhook URL（备用） |
 | `FEISHU_WEBHOOK_SECRET` | `""` | 签名密钥（可选） |
 | `FEISHU_NOTIFY_ENABLED` | `false` | 是否启用飞书通知 |
 
