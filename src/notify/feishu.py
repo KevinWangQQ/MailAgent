@@ -23,10 +23,9 @@ class FeishuNotifier:
     # 只通知最近 N 天内的邮件，防止补偿同步时的通知风暴
     NOTIFY_MAX_AGE_DAYS = 3
 
-    def __init__(self, webhook_url: str, secret: str = "", copy_base_url: str = ""):
+    def __init__(self, webhook_url: str, secret: str = ""):
         self.webhook_url = webhook_url
         self.secret = secret
-        self.copy_base_url = copy_base_url or "https://mailagent.chenge.ink"
         self._session: Optional[aiohttp.ClientSession] = None
 
     async def _get_session(self) -> aiohttp.ClientSession:
@@ -143,15 +142,24 @@ class FeishuNotifier:
             "reply_suggestion": reply_suggestion[:300] if reply_suggestion else "",
             "notion_url": notion_url,
         }
-        info_json = json.dumps(info_data, ensure_ascii=False, separators=(",", ":"))
-        copy_param = base64.urlsafe_b64encode(info_json.encode()).decode()
-        copy_url = f"{self.copy_base_url}/copy?d={copy_param}"
+        info_json_pretty = json.dumps(info_data, ensure_ascii=False, indent=2)
 
-        # 精简预览块
-        preview = f"Row ID: {row_id or 'N/A'} | Page: {page_id[:12]}..."
+        # 折叠面板：点击展开完整信息，代码块自带复制按钮
         card["elements"].append({
-            "tag": "div",
-            "text": {"content": f"`{preview}`", "tag": "lark_md"}
+            "tag": "collapsible_panel",
+            "expanded": False,
+            "header": {
+                "title": {
+                    "tag": "plain_text",
+                    "content": "📋 完整信息（点击展开复制）"
+                }
+            },
+            "elements": [
+                {
+                    "tag": "markdown",
+                    "content": f"```json\n{info_json_pretty}\n```"
+                }
+            ]
         })
 
         # 按钮行
@@ -163,13 +171,8 @@ class FeishuNotifier:
                 "type": "primary",
                 "url": notion_url
             })
-        actions.append({
-            "tag": "button",
-            "text": {"content": "一键复制信息", "tag": "plain_text"},
-            "type": "default",
-            "url": copy_url
-        })
-        card["elements"].append({"tag": "action", "actions": actions})
+        if actions:
+            card["elements"].append({"tag": "action", "actions": actions})
 
         payload = {"msg_type": "interactive", "card": card}
 
