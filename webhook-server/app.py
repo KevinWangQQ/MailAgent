@@ -188,6 +188,58 @@ function copyInfo(){{
 </script></body></html>"""
 
 
+@app.post("/api/command")
+async def handle_command(request: Request):
+    """接收 Openclaw / 外部系统指令，推入 Redis 队列
+
+    Body: flat JSON，必须包含 database_id 和 command。
+    其余字段自动放入 properties。
+
+    示例:
+        POST /api/command
+        {
+            "database_id": "2df15375...",
+            "command": "create_draft",
+            "message_id": "MWHPR05MB...",
+            "reply_suggestion": "Hi Neil...",
+            "mailbox": "收件箱",
+            "mode": "reply-all",
+            "extra_to": "alice@tp-link.com",
+            "extra_cc": "bob@tp-link.com"
+        }
+    """
+    if WEBHOOK_SECRET:
+        auth = request.headers.get("Authorization", "")
+        token = request.headers.get("X-Webhook-Token", "")
+        if auth != f"Bearer {WEBHOOK_SECRET}" and token != WEBHOOK_SECRET:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
+    body = await request.json()
+    database_id = body.get("database_id", "").replace("-", "")
+    command = body.get("command", "")
+
+    if not database_id or not command:
+        raise HTTPException(status_code=400, detail="Missing database_id or command")
+
+    meta_keys = {"database_id", "command", "page_id"}
+    properties = {k: v for k, v in body.items() if k not in meta_keys}
+
+    message = {
+        "id": f"cmd_{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}",
+        "type": command,
+        "database_id": database_id,
+        "page_id": body.get("page_id", ""),
+        "properties": properties,
+        "timestamp": int(time.time() * 1000),
+    }
+
+    queue_key = f"{QUEUE_PREFIX}:{database_id}:events"
+    await redis_pool.lpush(queue_key, json.dumps(message))
+    await redis_pool.expire(queue_key, QUEUE_TTL_DAYS * 86400)
+
+    return {"ok": True, "queue": queue_key, "event_id": message["id"]}
+
+
 @app.get("/health")
 async def health():
     try:

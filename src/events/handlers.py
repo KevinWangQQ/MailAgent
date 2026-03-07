@@ -201,12 +201,27 @@ class EventHandlers:
                 internal_id = record.get('internal_id') if isinstance(record, dict) else getattr(record, 'internal_id', None)
 
         # 构建脚本参数
+        mode = props.get("mode", "reply-all")
+        extra_to = props.get("extra_to", "")
+        extra_cc = props.get("extra_cc", "")
+        subject = props.get("subject", "")
+        to_email = props.get("to", "") or props.get("to_email", "")
+
         script_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "scripts", "create_reply_draft.sh")
-        cmd = ["bash", script_path, "--mode", "reply-all", "--reply-text", reply_suggestion, "--mailbox", mailbox]
+        cmd = ["bash", script_path, "--mode", mode, "--reply-text", reply_suggestion, "--mailbox", mailbox]
         if internal_id:
             cmd.extend(["--internal-id", str(internal_id)])
         elif message_id:
             cmd.extend(["--message-id", message_id])
+        if extra_to:
+            cmd.extend(["--extra-to", extra_to])
+        if extra_cc:
+            cmd.extend(["--extra-cc", extra_cc])
+        if mode == "new":
+            if to_email:
+                cmd.extend(["--to", to_email])
+            if subject:
+                cmd.extend(["--subject", subject])
 
         try:
             proc = await asyncio.create_subprocess_exec(

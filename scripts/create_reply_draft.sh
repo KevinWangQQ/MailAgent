@@ -48,6 +48,9 @@ ACCOUNT="Exchange"
 SCREENSHOT=false
 SELF_EMAILS="lucien.chen@tp-link.com,yuanquan.chen@tp-link.com"
 SCREENSHOT_DIR="/tmp/mail-drafts"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+EXTRA_TO=""
+EXTRA_CC=""
 
 # 解析参数
 while [[ $# -gt 0 ]]; do
@@ -62,6 +65,8 @@ while [[ $# -gt 0 ]]; do
     --reply-text) REPLY_TEXT="$2"; shift 2 ;;
     --mailbox) MAILBOX="$2"; shift 2 ;;
     --account) ACCOUNT="$2"; shift 2 ;;
+    --extra-to) EXTRA_TO="$2"; shift 2 ;;
+    --extra-cc) EXTRA_CC="$2"; shift 2 ;;
     --screenshot) SCREENSHOT=true; shift ;;
     *) echo "Unknown arg: $1" >&2; exit 1 ;;
   esac
@@ -110,6 +115,37 @@ build_cc_script() {
   echo "$script"
 }
 
+# 构建额外收件人 AppleScript（用于 reply 模式注入到 replyMsg）
+build_extra_recipients_script() {
+  local extra_to="$1" extra_cc="$2"
+  local lines=""
+  if [[ -n "$extra_to" ]]; then
+    IFS=',' read -ra ADDRS <<< "$extra_to"
+    for addr in "${ADDRS[@]}"; do
+      addr="$(echo "$addr" | xargs)"
+      [[ -n "$addr" ]] && lines+="
+          make new to recipient at end of to recipients with properties {address:\"$(escape_as "$addr")\"}"
+    done
+  fi
+  if [[ -n "$extra_cc" ]]; then
+    IFS=',' read -ra ADDRS <<< "$extra_cc"
+    for addr in "${ADDRS[@]}"; do
+      addr="$(echo "$addr" | xargs)"
+      local skip=false
+      IFS=',' read -ra SELF_ARRAY <<< "$SELF_EMAILS"
+      for self_addr in "${SELF_ARRAY[@]}"; do
+        [[ "$addr" == "$self_addr" ]] && skip=true && break
+      done
+      [[ "$skip" == "false" && -n "$addr" ]] && lines+="
+          make new cc recipient at end of cc recipients with properties {address:\"$(escape_as "$addr")\"}"
+    done
+  fi
+  if [[ -n "$lines" ]]; then
+    echo "tell replyMsg${lines}
+        end tell"
+  fi
+}
+
 # 截图 Mail 前台窗口
 capture_screenshot() {
   if [[ "$SCREENSHOT" != "true" ]]; then return; fi
@@ -137,19 +173,20 @@ capture_screenshot() {
 # System Events 粘贴内容 + 截图 + 保存关闭
 paste_and_save() {
   local text="$1"
-  osascript <<EOF
+  # 设置 HTML 富文本剪贴板（Markdown → HTML → NSPasteboard）
+  printf '%s' "$text" | python3 "$SCRIPT_DIR/html_clipboard.py"
+  osascript <<'ASEOF'
 tell application "Mail" to activate
 delay 1
 tell application "System Events"
   tell process "Mail"
-    set the clipboard to "$text"
     keystroke "v" using command down
   end tell
 end tell
-EOF
+ASEOF
   sleep 2
   capture_screenshot
-  osascript <<EOF
+  osascript <<'ASEOF'
 tell application "System Events"
   tell process "Mail"
     keystroke "s" using command down
@@ -157,7 +194,7 @@ tell application "System Events"
     keystroke "w" using command down
   end tell
 end tell
-EOF
+ASEOF
   sleep 1
 }
 
@@ -183,13 +220,17 @@ do_reply() {
   esc_account="$(escape_as "$ACCOUNT")"
   esc_mailbox="$(escape_as "$AS_MAILBOX")"
 
+  local extra_recip
+  extra_recip="$(build_extra_recipients_script "$EXTRA_TO" "$EXTRA_CC")"
+
   # 方法 1: internal_id（快速 ~1s）
   if [[ -n "$INTERNAL_ID" && "$INTERNAL_ID" != "null" ]]; then
     RESULT=$(osascript -e "
       tell application \"Mail\"
         try
           set origMsg to first message of mailbox \"${esc_mailbox}\" of account \"${esc_account}\" whose id is ${INTERNAL_ID}
-          reply origMsg with opening window${reply_flag}
+          set replyMsg to reply origMsg with opening window${reply_flag}
+          ${extra_recip}
           return \"ok\"
         on error errMsg
           return \"error:\" & errMsg
@@ -213,7 +254,8 @@ do_reply() {
       tell application \"Mail\"
         try
           set origMsg to first message of mailbox \"${esc_mailbox}\" of account \"${esc_account}\" whose message id is \"${esc_msgid}\"
-          reply origMsg with opening window${reply_flag}
+          set replyMsg to reply origMsg with opening window${reply_flag}
+          ${extra_recip}
           return \"ok\"
         on error errMsg
           return \"error:\" & errMsg
@@ -244,6 +286,15 @@ do_new() {
   esc_to_name="$(escape_as "$TO_NAME")"
   local cc_script
   cc_script="$(build_cc_script "$CC_EMAILS")"
+  if [[ -n "$EXTRA_TO" ]]; then
+    IFS=',' read -ra _ET <<< "$EXTRA_TO"
+    for _a in "${_ET[@]}"; do
+      _a="$(echo "$_a" | xargs)"
+      [[ -n "$_a" ]] && cc_script+="
+        make new to recipient at end of to recipients with properties {address:\"$(escape_as "$_a")\"}"
+    done
+  fi
+  [[ -n "$EXTRA_CC" ]] && cc_script+="$(build_cc_script "$EXTRA_CC")"
 
   # new 模式主题自动加 Re: 前缀（如果是 fallback）
   local subj_prefix=""
