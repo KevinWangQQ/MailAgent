@@ -3,7 +3,8 @@ Webhook 事件处理器
 
 处理从 Redis 队列收到的 Notion 变更事件：
 - flag_changed: Is Read / Is Flagged 变化 → 同步到 Mail.app
-- ai_reviewed: AI Review 完成 → 同步到 Mail.app + 飞书通知
+- ai_reviewed: AI Review 完成 → 飞书通知
+- completed: 用户标记已完成 → 移除 Mail.app 旗标
 - page_updated: 通用事件 → 自动判断处理方式
 """
 
@@ -105,14 +106,51 @@ class EventHandlers:
                 "ai_priority": ai_priority,
             })
 
+    async def handle_completed(self, event: Dict):
+        """处理用户标记已完成事件: 移除 Mail.app 旗标"""
+        props = event.get("properties", {})
+        message_id = props.get("message_id", "")
+
+        if not message_id:
+            logger.warning(f"completed event missing message_id: {event.get('id')}")
+            return
+
+        record = self.sync_store.get_by_message_id(message_id)
+        if not record:
+            logger.warning(f"Email not found in SyncStore: {message_id[:40]}")
+            return
+
+        internal_id = record.get('internal_id') if isinstance(record, dict) else getattr(record, 'internal_id', None)
+        mailbox = record.get('mailbox') if isinstance(record, dict) else getattr(record, 'mailbox', None)
+        stored_flagged = bool(record.get('is_flagged') if isinstance(record, dict) else getattr(record, 'is_flagged', False))
+
+        if not stored_flagged:
+            logger.debug(f"Already unflagged, skipping: {message_id[:40]}")
+            return
+
+        # 移除旗标 + 标记已读
+        if internal_id:
+            self.arm.set_flag_by_id(internal_id, False, mailbox)
+            self.arm.mark_as_read_by_id(internal_id, True, mailbox)
+        else:
+            self.arm.set_flag(message_id, False, mailbox)
+            self.arm.mark_as_read(message_id, True, mailbox)
+
+        # Echo prevention
+        if internal_id:
+            self.sync_store.update_local_flags(internal_id, True, False)
+
+        logger.info(f"Completed: unflagged {message_id[:40]}")
+
     async def handle_page_updated(self, event: Dict):
         """通用事件: 根据内容自动判断"""
         props = event.get("properties", {})
         ai_review_status = props.get("ai_review_status", "")
 
-        # 如果 AI Review 已完成，走 ai_reviewed 流程
         if ai_review_status == "AI Reviewed":
             await self.handle_ai_reviewed(event)
+        elif ai_review_status == "已完成":
+            await self.handle_completed(event)
 
         # 始终检查 flag 变化
         if "is_read" in props or "is_flagged" in props:

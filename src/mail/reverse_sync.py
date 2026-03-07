@@ -130,7 +130,9 @@ class NotionToMailSync:
         if success:
             self._update_store_flags(internal_id, ai_action)
             try:
-                await self.notion_sync.update_page_mail_sync_status(page_id, synced=True)
+                await self.notion_sync.update_page_mail_sync_status(
+                    page_id, synced=True, processing_status="已同步"
+                )
                 logger.info(f"Reverse sync completed for {msg_short}")
             except Exception as e:
                 logger.error(f"Failed to update Notion sync status: {e}")

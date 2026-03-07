@@ -119,7 +119,7 @@ tail -f logs/sync.log
 | `meeting_sync.py` | 会议邀请检测与同步 |
 | `icalendar_parser.py` | iCalendar 解析器 |
 | `health_check.py` | 健康检查（发现遗漏邮件） |
-| `reverse_sync.py` | 反向同步（Notion → Mail.app + 飞书通知） |
+| `reverse_sync.py` | 反向同步（Notion → Mail.app + 飞书通知 + Processing Status 更新） |
 
 #### 通知模块 (`src/notify/`)
 
@@ -132,7 +132,7 @@ tail -f logs/sync.log
 | 模块 | 职责 |
 |------|------|
 | `redis_consumer.py` | Redis BLPOP 队列消费者（自动重连） |
-| `handlers.py` | Webhook 事件处理器（flag_changed / ai_reviewed / page_updated） |
+| `handlers.py` | Webhook 事件处理器（flag_changed / ai_reviewed / completed / page_updated） |
 
 #### Webhook Server (`webhook-server/`)
 
@@ -278,7 +278,44 @@ pending → fetch_failed → (重试) → fetched → failed → (重试) → sy
            dead_letter                    dead_letter
 ```
 
-#### 3. 内联图片处理
+#### 3. Processing Status 生命周期（双向同步）
+
+```
+Processing Status 状态流转:
+
+未处理 ──(AI 审核)──→ AI Reviewed ──(反向同步)──→ 已同步 ──(用户处理)──→ 已完成
+```
+
+**各状态说明：**
+
+| 状态 | 含义 | 触发方 | 动作 |
+|------|------|--------|------|
+| `未处理` | 新邮件等待 AI 审核 | 系统自动 | 无 |
+| `AI Reviewed` | AI 已设置 Action Type + Priority | AI Automation | 触发反向同步 |
+| `已同步` | 已同步到 Mail.app | 反向同步成功后自动 | 不再处理 |
+| `已完成` | 用户已处理（如已回复） | 用户手动 / Mail.app 取消旗标 | 移除旗标 |
+
+**反向同步 Action Type 映射：**
+
+| Action Type | Mail.app 操作 | 飞书通知 |
+|------------|--------------|---------|
+| 需要回复/需要决策/需要Review/需要会议/需要跟进/等待响应 | 标记已读 + 设旗标 | 紧急/重要时通知 |
+| 仅供参考/已完结 | 标记已读 | 否 |
+
+**双向完成闭环：**
+- Mail.app 取消旗标 → 正向同步 → Notion `Is Flagged=False` + `Processing Status=已完成`
+- Notion 标记 `已完成` → webhook `?event=completed` → 移除 Mail.app 旗标
+
+**Webhook 事件类型：**
+
+| 事件 | 触发条件 | 处理动作 |
+|------|---------|---------|
+| `flag_changed` | Is Read / Is Flagged 变化 | 同步到 Mail.app |
+| `ai_reviewed` | Processing Status → AI Reviewed | 飞书通知 |
+| `completed` | Processing Status → 已完成 | 移除 Mail.app 旗标 |
+| `page_updated` | 通用事件 | 自动路由到上述处理器 |
+
+#### 4. 内联图片处理
 
 ```python
 # converter/html_converter.py

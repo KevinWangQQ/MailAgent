@@ -528,7 +528,7 @@ class NewWatcher:
 
         try:
             # 1. 查询 Mail.app 当前 flags
-            current_flags = self.radar.get_recent_flags(limit=1000)
+            current_flags = self.radar.get_recent_flags(limit=3000)
             if not current_flags:
                 return
 
@@ -544,11 +544,14 @@ class NewWatcher:
                 if not stored:
                     continue
                 if current['is_read'] != stored['is_read'] or current['is_flagged'] != stored['is_flagged']:
+                    # 取消旗标 (True→False) 表示用户已处理，标记为已完成
+                    unflagged = stored['is_flagged'] and not current['is_flagged']
                     changes.append({
                         'internal_id': iid,
                         'is_read': current['is_read'],
                         'is_flagged': current['is_flagged'],
                         'notion_page_id': stored['notion_page_id'],
+                        'unflagged': unflagged,
                     })
 
             if not changes:
@@ -559,10 +562,13 @@ class NewWatcher:
             # 4. 批量更新 Notion + SyncStore（每周期最多 10 个，避免阻塞）
             for change in changes[:10]:
                 try:
+                    # 取消旗标 → 标记已完成
+                    status = "已完成" if change.get('unflagged') else ""
                     await self.notion_sync.update_email_flags(
                         change['notion_page_id'],
                         change['is_read'],
-                        change['is_flagged']
+                        change['is_flagged'],
+                        processing_status=status
                     )
                     self.sync_store.update_local_flags(
                         change['internal_id'],

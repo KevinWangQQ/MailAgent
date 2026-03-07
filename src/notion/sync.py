@@ -1122,27 +1122,22 @@ class NotionSync:
     async def update_page_mail_sync_status(
         self,
         page_id: str,
-        synced: bool = True
+        synced: bool = True,
+        processing_status: str = ""
     ):
-        """更新页面的邮件同步状态
-
-        设置 Synced to Mail = True
-        设置 Mail Sync Time = now
-        """
+        """更新页面的邮件同步状态"""
         try:
-            logger.info(f"Updating mail sync status for page: {page_id}")
-
             properties = {
                 "Synced to Mail": {"checkbox": synced},
-                "Mail Sync Time": {"date": {"start": datetime.now().isoformat()}}
             }
+            if processing_status:
+                properties["Processing Status"] = {"select": {"name": processing_status}}
 
             await self.client.client.pages.update(
                 page_id=page_id,
                 properties=properties
             )
-
-            logger.info(f"Mail sync status updated for page: {page_id}")
+            logger.info(f"Mail sync status updated: {page_id} status={processing_status or 'unchanged'}")
 
         except Exception as e:
             logger.error(f"Failed to update mail sync status for {page_id}: {e}")
@@ -1152,27 +1147,24 @@ class NotionSync:
         self,
         page_id: str,
         is_read: bool,
-        is_flagged: bool
+        is_flagged: bool,
+        processing_status: str = ""
     ):
-        """更新邮件的 Is Read / Is Flagged 状态到 Notion
-
-        Args:
-            page_id: Notion 页面 ID
-            is_read: 是否已读
-            is_flagged: 是否标旗
-        """
+        """更新邮件的 Is Read / Is Flagged 状态到 Notion"""
         try:
             properties = {
                 "Is Read": {"checkbox": is_read},
                 "Is Flagged": {"checkbox": is_flagged},
             }
+            if processing_status:
+                properties["Processing Status"] = {"select": {"name": processing_status}}
 
             await self.client.client.pages.update(
                 page_id=page_id,
                 properties=properties
             )
 
-            logger.debug(f"Flags updated for {page_id}: read={is_read}, flagged={is_flagged}")
+            logger.debug(f"Flags updated for {page_id}: read={is_read}, flagged={is_flagged}, status={processing_status or 'unchanged'}")
 
         except Exception as e:
             logger.error(f"Failed to update flags for {page_id}: {e}")
