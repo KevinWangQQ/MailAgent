@@ -42,11 +42,11 @@ app = FastAPI(title="MailAgent Webhook Server", lifespan=lifespan)
 
 
 def _extract_text(prop: Dict) -> str:
-    """Extract text from Notion property (title or rich_text)."""
+    """Extract text from Notion property (title or rich_text), joining all elements."""
     for key in ("title", "rich_text"):
         items = prop.get(key, [])
         if items:
-            return items[0].get("text", {}).get("content", "")
+            return "".join(item.get("text", {}).get("content", "") for item in items)
     return ""
 
 

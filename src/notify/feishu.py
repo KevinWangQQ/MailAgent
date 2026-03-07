@@ -246,6 +246,7 @@ class FeishuNotifier:
             "from_email": from_email, "from_name": sender_display,
             "to": to_addr, "cc": cc_addr,
             "date": date_str,
+            "chat_id": self.chat_id,
             "ai_action": ai_action, "ai_priority": ai_priority,
         }
         actions.append({
