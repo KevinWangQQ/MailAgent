@@ -122,31 +122,43 @@ class NotionToMailSync:
 
         internal_id = self._lookup_internal_id(message_id)
 
+        # 邮件已不在 Mail.app 中（被删除/移动），直接标记已同步
+        if not internal_id:
+            logger.info(f"Email not found in Mail.app, marking as synced: {msg_short}")
+            try:
+                await self.notion_sync.update_page_mail_sync_status(
+                    page_id, synced=True, processing_status="已同步"
+                )
+            except Exception as e:
+                logger.error(f"Failed to update Notion sync status: {e}")
+                return False
+            return True
+
         # 根据 Action Type 决定操作
         if ai_action in self.FLAG_ACTIONS:
             success = self._do_mark_read_and_flag(internal_id, message_id, mailbox)
         elif ai_action in self.READ_ACTIONS:
             success = self._do_mark_read(internal_id, message_id, mailbox)
         else:
-            # 未知 action 默认标记已读
             if ai_action:
                 logger.warning(f"Unknown action '{ai_action}', defaulting to mark as read")
             success = self._do_mark_read(internal_id, message_id, mailbox)
 
-        if success:
-            self._update_store_flags(internal_id, ai_action)
-            try:
-                await self.notion_sync.update_page_mail_sync_status(
-                    page_id, synced=True, processing_status="已同步"
-                )
-                logger.info(f"Reverse sync completed for {msg_short}")
-            except Exception as e:
-                logger.error(f"Failed to update Notion sync status: {e}")
-                return False
-        else:
-            logger.error(f"Failed to execute action on Mail.app: {msg_short}")
+        # 操作失败（邮件可能已被删除），仍标记已同步防止无限重试
+        if not success:
+            logger.warning(f"Mail.app action failed (email may be deleted), marking synced: {msg_short}")
 
-        return success
+        self._update_store_flags(internal_id, ai_action)
+        try:
+            await self.notion_sync.update_page_mail_sync_status(
+                page_id, synced=True, processing_status="已同步"
+            )
+            logger.info(f"Reverse sync completed for {msg_short}")
+        except Exception as e:
+            logger.error(f"Failed to update Notion sync status: {e}")
+            return False
+
+        return True
 
     def _lookup_internal_id(self, message_id: str) -> Optional[int]:
         # 1. SyncStore 查找
