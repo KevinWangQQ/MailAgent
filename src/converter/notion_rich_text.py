@@ -16,25 +16,42 @@ def rich_text_to_html(items: list, font_size: int = 14) -> str:
         return ""
     parts = []
     for item in items:
+        item_type = item.get("type", "text")
+
+        # Equation: render as inline code
+        if item_type == "equation":
+            expr = item.get("equation", {}).get("expression", "")
+            if expr:
+                expr = expr.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                parts.append(
+                    f"<code style='background:#f0f0f0;padding:2px 6px;border-radius:3px;font-style:italic'>{expr}</code>"
+                )
+            continue
+
         text = item.get("text", {}).get("content", "")
         if not text:
             continue
         text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-        text = text.replace("\n", "<br>")
 
         ann = item.get("annotations", {})
         link = item.get("text", {}).get("link")
 
         if ann.get("code"):
-            text = f"<code style='background:#f0f0f0;padding:1px 4px;border-radius:3px'>{text}</code>"
-        if ann.get("bold"):
-            text = f"<b>{text}</b>"
-        if ann.get("italic"):
-            text = f"<i>{text}</i>"
-        if ann.get("strikethrough"):
-            text = f"<s>{text}</s>"
-        if ann.get("underline"):
-            text = f"<u>{text}</u>"
+            # Multi-line code → <pre><code>, single-line → inline <code>
+            if "\n" in text:
+                text = f"<pre style='background:#f0f0f0;padding:8px 12px;border-radius:6px;font-size:13px;overflow-x:auto'><code>{text}</code></pre>"
+            else:
+                text = f"<code style='background:#f0f0f0;padding:1px 4px;border-radius:3px'>{text}</code>"
+        else:
+            text = text.replace("\n", "<br>")
+            if ann.get("bold"):
+                text = f"<b>{text}</b>"
+            if ann.get("italic"):
+                text = f"<i>{text}</i>"
+            if ann.get("strikethrough"):
+                text = f"<s>{text}</s>"
+            if ann.get("underline"):
+                text = f"<u>{text}</u>"
 
         color = ann.get("color", "default")
         if color != "default":

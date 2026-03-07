@@ -273,13 +273,23 @@ def _extract_rich_text(prop: Dict) -> str:
             continue
         parts = []
         for item in items:
+            item_type = item.get("type", "text")
+            # Equation
+            if item_type == "equation":
+                expr = item.get("equation", {}).get("expression", "")
+                if expr:
+                    parts.append(f"`{expr}`")
+                continue
             text = item.get("text", {}).get("content", "")
             if not text:
                 continue
             ann = item.get("annotations", {})
             link = item.get("text", {}).get("link")
             if ann.get("code"):
-                text = f"`{text}`"
+                if "\n" in text:
+                    parts.append(f"\n```\n{text}\n```\n")
+                else:
+                    text = f"`{text}`"
             else:
                 if ann.get("bold") and ann.get("italic"):
                     text = f"***{text}***"
