@@ -96,14 +96,30 @@ class EventHandlers:
         )
 
         if should_notify and self.feishu:
+            message_id = props.get("message_id", "")
+            # 查找 internal_id
+            internal_id = None
+            if message_id and self.sync_store:
+                record = self.sync_store.get_by_message_id(message_id)
+                if record:
+                    internal_id = record.get('internal_id') if isinstance(record, dict) else getattr(record, 'internal_id', None)
+
             await self.feishu.notify_important_email({
                 "page_id": page_id,
+                "message_id": message_id,
+                "internal_id": internal_id,
                 "subject": props.get("subject", ""),
                 "from_name": props.get("from_name", ""),
                 "from_email": props.get("from_email", ""),
+                "to_addr": props.get("to_addr", ""),
+                "cc_addr": props.get("cc_addr", ""),
                 "date": props.get("date", ""),
+                "mailbox": props.get("mailbox", ""),
                 "ai_action": ai_action,
                 "ai_priority": ai_priority,
+                "ai_summary": props.get("ai_summary", ""),
+                "reply_suggestion": props.get("reply_suggestion", ""),
+                "category": props.get("category", ""),
             })
 
     async def handle_completed(self, event: Dict):

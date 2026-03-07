@@ -76,6 +76,8 @@ def parse_properties(raw_props: Dict[str, Any]) -> Dict[str, Any]:
         "Subject": ("subject", _extract_text),
         "From Name": ("from_name", _extract_text),
         "From": ("from_email", _extract_email),
+        "To": ("to_addr", _extract_text),
+        "CC": ("cc_addr", _extract_text),
         "Date": ("date", _extract_date),
         "Is Read": ("is_read", _extract_checkbox),
         "Is Flagged": ("is_flagged", _extract_checkbox),
@@ -83,6 +85,9 @@ def parse_properties(raw_props: Dict[str, Any]) -> Dict[str, Any]:
         "Priority": ("ai_priority", _extract_select),
         "Processing Status": ("ai_review_status", _extract_select),
         "Mailbox": ("mailbox", _extract_select),
+        "Category": ("category", _extract_select),
+        "AI Summary": ("ai_summary", _extract_text),
+        "Reply Suggestion": ("reply_suggestion", _extract_text),
     }
 
     for notion_key, (out_key, extractor) in field_map.items():
