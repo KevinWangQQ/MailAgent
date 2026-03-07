@@ -4,6 +4,8 @@
 用于 create_draft 路径：webhook 传入 raw blocks → 本地直接生成 HTML → 剪贴板。
 """
 
+import re
+
 _COLOR_MAP = {
     "gray": "#787774", "brown": "#9F6B53", "orange": "#D9730D",
     "yellow": "#CB912F", "green": "#448361", "blue": "#337EA9",
@@ -43,7 +45,9 @@ def rich_text_to_html(items: list, font_size: int = 14) -> str:
             else:
                 text = f"<code style='background:#f0f0f0;padding:1px 4px;border-radius:3px'>{text}</code>"
         else:
+            text = re.sub(r'(?m)^- ', '• ', text)
             text = text.replace("\n", "<br>")
+            text = text.replace("<br>- ", "<br>• ")
             if ann.get("bold"):
                 text = f"<b>{text}</b>"
             if ann.get("italic"):
@@ -71,4 +75,6 @@ def rich_text_to_html(items: list, font_size: int = 14) -> str:
         parts.append(text)
 
     body = "".join(parts)
+    body = re.sub(r'(<br>)+(<pre\b)', r'\2', body)
+    body = re.sub(r'(</pre>)(<br>)+', r'\1', body)
     return f"<div style='font-family:system-ui,-apple-system;font-size:{font_size}px;line-height:1.6'>{body}</div>"

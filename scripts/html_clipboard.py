@@ -11,9 +11,30 @@ def md_to_html(text: str, font_size: int = 14) -> str:
     in_list = False
     in_table = False
     table_header_done = False
+    in_code_block = False
+    code_block_lines = []
 
     for line in lines:
         stripped = line.strip()
+
+        # Fenced code block (```)
+        if stripped.startswith("```"):
+            if in_code_block:
+                code_content = "\n".join(code_block_lines)
+                code_content = code_content.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                html_lines.append(
+                    f"<pre style='background:#f0f0f0;padding:8px 12px;border-radius:6px;font-size:13px;overflow-x:auto'><code>{code_content}</code></pre>"
+                )
+                code_block_lines = []
+                in_code_block = False
+            else:
+                in_code_block = True
+                code_block_lines = []
+            continue
+
+        if in_code_block:
+            code_block_lines.append(line)
+            continue
 
         # 表格行
         if "|" in stripped and stripped.startswith("|"):

@@ -284,6 +284,7 @@ def _extract_rich_text(prop: Dict) -> str:
             if ann.get("code"):
                 if "\n" in text:
                     parts.append(f"\n```\n{text}\n```\n")
+                    continue
                 else:
                     text = f"`{text}`"
             else:
@@ -295,6 +296,8 @@ def _extract_rich_text(prop: Dict) -> str:
                     text = f"*{text}*"
                 if ann.get("strikethrough"):
                     text = f"~~{text}~~"
+                if ann.get("underline"):
+                    text = f"<u>{text}</u>"
             if link and link.get("url"):
                 text = f"[{text}]({link['url']})"
             color = ann.get("color", "default")
