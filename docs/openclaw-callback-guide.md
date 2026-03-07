@@ -315,6 +315,35 @@ Notion Automation 配置：
 3. 调用 `create_reply_draft.sh --mode reply-all`（不截图）
 4. 更新 Notion Processing Status → `草稿已创建`
 
+### 路径 3: Openclaw → /api/command → Redis → 本地 MailAgent
+
+```
+Openclaw HTTP POST → webhook-server /api/command → Redis → 本地 handler → 脚本 → 更新 Notion 状态
+```
+
+Openclaw 无需跨 agent 调用脚本，直接通过 HTTP API 发送指令：
+
+```bash
+curl -X POST https://<server>/api/command \
+  -H "Content-Type: application/json" \
+  -H "X-Webhook-Token: <WEBHOOK_SECRET>" \
+  -d '{
+    "database_id": "2df15375830d8094...",
+    "command": "create_draft",
+    "page_id": "31b15375-830d-8102-...",
+    "message_id": "MWHPR05MB3390...",
+    "reply_suggestion": "Hi Neil, Thank you...",
+    "mailbox": "收件箱",
+    "mode": "reply-all",
+    "extra_to": "alice@tp-link.com",
+    "extra_cc": "bob@tp-link.com"
+  }'
+```
+
+**与 `/webhook/notion` 的区别**：
+- `/webhook/notion`：接收 Notion 原始页面数据，自动解析 properties
+- `/api/command`：接收 flat JSON，`database_id` + `command` 必填，其余字段直接透传为 properties
+
 ### Processing Status 生命周期（含草稿）
 
 ```
