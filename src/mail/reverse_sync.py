@@ -187,9 +187,10 @@ class NotionToMailSync:
         ai_action = page.get("ai_action", "")
         ai_priority = page.get("ai_priority", "")
 
+        # 重要/紧急 且 需要行动
         should_notify = (
-            ai_action in self.NOTIFY_ACTIONS
-            or ai_priority in self.NOTIFY_PRIORITIES
+            ai_priority in self.NOTIFY_PRIORITIES
+            and ai_action in self.FLAG_ACTIONS
         )
 
         if not should_notify:

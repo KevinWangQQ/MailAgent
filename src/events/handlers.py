@@ -87,12 +87,12 @@ class EventHandlers:
         ai_priority = props.get("ai_priority", "")
         ai_action = props.get("ai_action", "")
 
-        # 飞书通知：紧急/重要 或 需要回复/需要决策
-        notify_actions = {"需要回复", "需要决策"}
+        # 飞书通知：重要/紧急 且 需要行动
         notify_priorities = {"🔴 紧急", "🟡 重要"}
+        flag_actions = {"需要回复", "需要决策", "需要Review", "需要会议", "需要跟进", "等待响应"}
         should_notify = (
             ai_priority in notify_priorities
-            or ai_action in notify_actions
+            and ai_action in flag_actions
         )
 
         if should_notify and self.feishu:
