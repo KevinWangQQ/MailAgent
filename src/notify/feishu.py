@@ -185,7 +185,7 @@ class FeishuNotifier:
                 "columns": [
                     {
                         "tag": "column", "width": "weighted", "weight": 1,
-                        "elements": [{"tag": "markdown", "content": f"**分类**\n{category or 'N/A'}"}]
+                        "elements": [{"tag": "markdown", "content": f"**操作**\n{ai_action or 'N/A'}"}]
                     },
                     {
                         "tag": "column", "width": "weighted", "weight": 1,
