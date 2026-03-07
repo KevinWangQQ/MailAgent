@@ -18,7 +18,7 @@ if ! command -v sshpass &> /dev/null; then
 fi
 
 echo "Deploying webhook-server to $SERVER..."
-sshpass -f "$PASS_FILE" ssh -o StrictHostKeyChecking=no "$USER@$SERVER" \
+sshpass -f "$PASS_FILE" ssh -o StrictHostKeyChecking=no -o PreferredAuthentications=password "$USER@$SERVER" \
     "cd $REMOTE_DIR && git pull && cd webhook-server && source venv/bin/activate && pip install -r requirements.txt -q && pm2 restart mailagent-webhook && pm2 status mailagent-webhook"
 
 echo "Done."
