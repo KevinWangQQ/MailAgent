@@ -39,9 +39,24 @@ class EventHandlers:
         self.feishu = feishu
         self.notion_sync = notion_sync
         self._result_callback = result_callback
+        self._stats = {
+            "flag_changed": 0,
+            "ai_reviewed": 0,
+            "completed": 0,
+            "create_draft": 0,
+            "create_draft_success": 0,
+            "create_draft_error": 0,
+            "query_mail": 0,
+            "feishu_notified": 0,
+        }
+
+    def get_stats(self) -> Dict:
+        """返回事件处理统计"""
+        return dict(self._stats)
 
     async def handle_flag_changed(self, event: Dict):
         """处理 flag 变化事件: Notion → Mail.app"""
+        self._stats["flag_changed"] += 1
         props = event.get("properties", {})
         message_id = props.get("message_id", "")
         is_read = props.get("is_read")
@@ -92,6 +107,7 @@ class EventHandlers:
 
     async def handle_ai_reviewed(self, event: Dict):
         """处理 AI Review 完成事件: Mail.app 标旗 + 飞书通知 + 更新 Notion 状态"""
+        self._stats["ai_reviewed"] += 1
         props = event.get("properties", {})
         page_id = event.get("page_id", "")
         ai_priority = props.get("ai_priority", "")
@@ -120,6 +136,7 @@ class EventHandlers:
         notify_priorities = {"🔴 紧急", "🟡 重要"}
         should_notify = ai_priority in notify_priorities and ai_action in self.FLAG_ACTIONS
         if should_notify and self.feishu:
+            self._stats["feishu_notified"] += 1
             await self.feishu.notify_important_email({
                 "page_id": page_id,
                 "message_id": message_id,
@@ -149,6 +166,7 @@ class EventHandlers:
 
     async def handle_completed(self, event: Dict):
         """处理用户标记已完成事件: 移除 Mail.app 旗标"""
+        self._stats["completed"] += 1
         props = event.get("properties", {})
         message_id = props.get("message_id", "")
 
@@ -185,6 +203,7 @@ class EventHandlers:
 
     async def handle_create_draft(self, event: Dict):
         """创建 Mail.app 回复草稿（Notion 按钮 / Openclaw 触发）"""
+        self._stats["create_draft"] += 1
         import time as _time
         _t0 = _time.monotonic()
 
@@ -285,16 +304,20 @@ class EventHandlers:
                     await self.notion_sync.update_page_mail_sync_status(
                         page_id, synced=True, processing_status="草稿已创建"
                     )
+                self._stats["create_draft_success"] += 1
                 await self._publish(event_id, {"status": "success", **result})
             else:
                 error = stderr.decode()[:200]
+                self._stats["create_draft_error"] += 1
                 logger.error(f"Draft script failed (rc={proc.returncode}): {error}")
                 await self._publish(event_id, {"status": "error", "error": error})
         except asyncio.TimeoutError:
+            self._stats["create_draft_error"] += 1
             logger.error(f"Draft script timeout for {message_id[:40]}")
             await self._close_mail_window()
             await self._publish(event_id, {"status": "error", "error": "timeout"})
         except Exception as e:
+            self._stats["create_draft_error"] += 1
             logger.error(f"Draft creation error: {e}")
             await self._close_mail_window()
             await self._publish(event_id, {"status": "error", "error": str(e)})
@@ -322,6 +345,7 @@ class EventHandlers:
 
     async def handle_query_mail(self, event: Dict):
         """查询邮件元数据（纯读操作，基于 SyncStore SQLite 查询）"""
+        self._stats["query_mail"] += 1
         props = event.get("properties", {})
         event_id = event.get("id", "")
 

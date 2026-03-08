@@ -2,7 +2,7 @@ module.exports = {
   apps: [{
     name: 'mailagent-webhook',
     script: 'start.py',
-    interpreter: './venv/bin/python3.9',
+    interpreter: './venv/bin/python3',
     cwd: '/home/lighthouse/MailAgent/webhook-server',
     instances: 1,
     exec_mode: 'fork',

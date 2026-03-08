@@ -35,6 +35,9 @@ class EmailNotionSyncApp:
             sync_store=self.watcher.sync_store
         )
 
+        # 事件处理器引用（用于 stats）
+        self._event_handlers = None
+
         # Redis 事件消费（P3: Notion webhook → Redis → Mail.app）
         self.redis_consumer = None
         if config.redis_events_enabled and config.redis_url:
@@ -58,6 +61,7 @@ class EmailNotionSyncApp:
                 notion_sync=self.watcher.notion_sync,
                 result_callback=self.redis_consumer.publish_result,
             )
+            self._event_handlers = handlers
 
             self.redis_consumer.on("flag_changed", handlers.handle_flag_changed)
             self.redis_consumer.on("ai_reviewed", handlers.handle_ai_reviewed)
@@ -67,6 +71,35 @@ class EmailNotionSyncApp:
             self.redis_consumer.on("query_mail", handlers.handle_query_mail)
 
             logger.info(f"Redis event consumer configured: queue={queue_key}")
+
+        # 看板统计上报
+        self.stats_reporter = None
+        if config.stats_report_url:
+            from src.stats_reporter import StatsReporter
+            self.stats_reporter = StatsReporter(
+                report_url=config.stats_report_url,
+                database_id=config.email_database_id,
+                token=config.stats_report_token,
+                interval=config.stats_report_interval,
+            )
+            self.stats_reporter.add_collector("watcher", lambda: self.watcher.get_stats())
+            self.stats_reporter.add_collector("reverse", lambda: self.reverse_sync.get_stats())
+            if self.redis_consumer:
+                self.stats_reporter.add_collector("redis_consumer", lambda: self.redis_consumer.get_stats())
+            if self._event_handlers:
+                self.stats_reporter.add_collector("handlers", lambda: self._event_handlers.get_stats())
+
+            # 捕获 ERROR 级别日志作为告警
+            def _alert_sink(message):
+                record = message.record
+                if record["level"].no >= 40:  # ERROR+
+                    self.stats_reporter.add_alert(
+                        level=record["level"].name.lower(),
+                        source=record["name"],
+                        message=str(record["message"]),
+                    )
+            logger.add(_alert_sink, level="ERROR", format="{message}")
+            logger.info(f"Stats reporter configured: url={config.stats_report_url} interval={config.stats_report_interval}s")
 
         self._shutdown_event = asyncio.Event()
 
@@ -104,6 +137,11 @@ class EmailNotionSyncApp:
                     self.redis_consumer.start(shutdown_event=self._shutdown_event)
                 )
 
+            # 启动看板统计上报（如果配置）
+            stats_task = None
+            if self.stats_reporter:
+                stats_task = asyncio.create_task(self._stats_reporter_loop())
+
             # 等待关闭信号
             await self._shutdown_event.wait()
 
@@ -117,6 +155,8 @@ class EmailNotionSyncApp:
             tasks = [watcher_task, reverse_task]
             if redis_task:
                 tasks.append(redis_task)
+            if stats_task:
+                tasks.append(stats_task)
             for task in tasks:
                 task.cancel()
                 try:
@@ -135,6 +175,9 @@ class EmailNotionSyncApp:
             if self.redis_consumer:
                 rc_stats = self.redis_consumer.get_stats()
                 logger.info(f"Redis consumer: received={rc_stats.get('received', 0)}, processed={rc_stats.get('processed', 0)}")
+            if self.stats_reporter:
+                await self.stats_reporter.report_once()
+                await self.stats_reporter.close()
             logger.info("Shutdown complete")
 
         except Exception as e:
@@ -157,6 +200,23 @@ class EmailNotionSyncApp:
                 break  # shutdown event set
             except asyncio.TimeoutError:
                 pass  # normal timeout, continue loop
+
+    async def _stats_reporter_loop(self):
+        """看板统计上报循环"""
+        interval = self.stats_reporter.interval
+        logger.info(f"Stats reporter loop started (interval={interval}s)")
+
+        while not self._shutdown_event.is_set():
+            try:
+                await self.stats_reporter.report_once()
+            except Exception as e:
+                logger.debug(f"Stats report error: {e}")
+
+            try:
+                await asyncio.wait_for(self._shutdown_event.wait(), timeout=interval)
+                break
+            except asyncio.TimeoutError:
+                pass
 
 async def main():
     """主函数"""

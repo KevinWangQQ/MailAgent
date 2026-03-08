@@ -8,17 +8,20 @@ MailAgent Webhook Server
 """
 
 import asyncio
+import hashlib
 import json
 import os
 import re
+import secrets
 import time
 import uuid
 import base64
+from pathlib import Path as FilePath
 from typing import Any, Dict, List, Optional
 
 import redis.asyncio as redis
 from fastapi import FastAPI, HTTPException, Path, Query, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from contextlib import asynccontextmanager
 from pydantic import BaseModel, Field
 
@@ -26,8 +29,10 @@ from pydantic import BaseModel, Field
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 REDIS_DB = int(os.getenv("REDIS_DB", "2"))
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
+DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD", "")
 QUEUE_PREFIX = "mailagent"
 QUEUE_TTL_DAYS = int(os.getenv("QUEUE_TTL_DAYS", "7"))
+STATS_TTL = 300  # 5 minutes, auto-expire stale stats
 
 redis_pool: Optional[redis.Redis] = None
 
@@ -677,3 +682,241 @@ async def admin_stats(request: Request):
         stats[db_id] = QueueInfo(queue=key, pending=length)
 
     return StatsResponse(queues=stats, total_queues=len(stats))
+
+
+# ── Dashboard ────────────────────────────────────────────────────────────
+
+DASHBOARD_SESSION_PREFIX = "mailagent:dashboard:session:"
+DASHBOARD_SESSION_TTL = 86400  # 24h
+STATS_KEY_PREFIX = "mailagent:stats:"
+
+_dashboard_html_cache: Optional[str] = None
+
+
+def _get_dashboard_html() -> str:
+    global _dashboard_html_cache
+    if _dashboard_html_cache is None:
+        html_path = FilePath(__file__).parent / "dashboard.html"
+        _dashboard_html_cache = html_path.read_text(encoding="utf-8")
+    return _dashboard_html_cache
+
+
+async def _check_dashboard_auth(request: Request) -> bool:
+    """检查看板 cookie session"""
+    if not DASHBOARD_PASSWORD:
+        return False
+    token = request.cookies.get("dash_session")
+    if not token:
+        return False
+    exists = await redis_pool.exists(f"{DASHBOARD_SESSION_PREFIX}{token}")
+    return bool(exists)
+
+
+_LOGIN_HTML = """<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MailAgent Dashboard Login</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,-apple-system,sans-serif;background:#0f172a;color:#e2e8f0;
+display:flex;align-items:center;justify-content:center;min-height:100vh}
+.card{background:#1e293b;border-radius:12px;padding:40px;width:360px;box-shadow:0 4px 24px rgba(0,0,0,.3)}
+h1{font-size:20px;margin-bottom:24px;text-align:center;color:#94a3b8}
+input{width:100%;padding:12px 16px;border:1px solid #334155;border-radius:8px;
+background:#0f172a;color:#e2e8f0;font-size:15px;outline:none;margin-bottom:16px}
+input:focus{border-color:#3b82f6}
+button{width:100%;padding:12px;border:none;border-radius:8px;background:#3b82f6;
+color:#fff;font-size:15px;cursor:pointer;font-weight:500}
+button:hover{background:#2563eb}
+.err{color:#ef4444;font-size:13px;margin-bottom:12px;text-align:center;display:none}
+</style></head><body>
+<div class="card">
+<h1>MailAgent Dashboard</h1>
+<div class="err" id="err">密码错误</div>
+<form method="POST" action="/dashboard/login">
+<input type="password" name="password" placeholder="请输入看板密码" autofocus required>
+<button type="submit">登 录</button>
+</form></div></body></html>"""
+
+
+@app.post(
+    "/api/stats/report",
+    tags=["运维"],
+    summary="接收本地 MailAgent 统计上报",
+    include_in_schema=False,
+)
+async def stats_report(request: Request):
+    """接收本地 MailAgent 定期上报的运行统计，存入 Redis。"""
+    _check_auth(request)
+
+    body = await request.json()
+    database_id = body.get("database_id", "").replace("-", "")
+    if not database_id:
+        raise HTTPException(status_code=400, detail="Missing database_id")
+
+    ts = body.get("timestamp", int(time.time()))
+    key_prefix = f"{STATS_KEY_PREFIX}{database_id}"
+
+    pipe = redis_pool.pipeline()
+
+    # Store each section as a Redis hash
+    for section in ("service", "watcher", "reverse", "redis_consumer", "handlers"):
+        data = body.get(section)
+        if data and isinstance(data, dict):
+            # Flatten nested dicts to JSON strings
+            flat = {}
+            for k, v in data.items():
+                flat[k] = json.dumps(v, ensure_ascii=False) if isinstance(v, (dict, list)) else str(v)
+            pipe.delete(f"{key_prefix}:{section}")
+            pipe.hset(f"{key_prefix}:{section}", mapping=flat)
+            pipe.expire(f"{key_prefix}:{section}", STATS_TTL)
+
+    # Store heartbeat
+    pipe.hset(f"{key_prefix}:service", "last_heartbeat", str(ts))
+
+    # Store alerts (append + trim)
+    alerts = body.get("alerts", [])
+    for alert in alerts:
+        pipe.lpush(f"{key_prefix}:alerts", json.dumps(alert, ensure_ascii=False))
+    if alerts:
+        pipe.ltrim(f"{key_prefix}:alerts", 0, 49)
+        pipe.expire(f"{key_prefix}:alerts", 86400)  # 24h
+
+    await pipe.execute()
+    return {"ok": True}
+
+
+@app.get("/dashboard/login", response_class=HTMLResponse, include_in_schema=False)
+async def dashboard_login_page(error: str = Query(default="")):
+    """看板登录页"""
+    if not DASHBOARD_PASSWORD:
+        raise HTTPException(status_code=503, detail="Dashboard not configured (set DASHBOARD_PASSWORD)")
+    html = _LOGIN_HTML
+    if error:
+        html = html.replace('display:none}', 'display:block}')
+    return HTMLResponse(html)
+
+
+@app.post("/dashboard/login", include_in_schema=False)
+async def dashboard_login(request: Request):
+    """验证密码并创建 session"""
+    if not DASHBOARD_PASSWORD:
+        raise HTTPException(status_code=503, detail="Dashboard not configured")
+
+    form = await request.form()
+    password = form.get("password", "")
+
+    if password != DASHBOARD_PASSWORD:
+        return RedirectResponse("/dashboard/login?error=1", status_code=303)
+
+    # Create session token
+    token = secrets.token_hex(32)
+    await redis_pool.setex(f"{DASHBOARD_SESSION_PREFIX}{token}", DASHBOARD_SESSION_TTL, "1")
+
+    response = RedirectResponse("/dashboard", status_code=303)
+    response.set_cookie(
+        "dash_session", token,
+        path="/dashboard",
+        httponly=True,
+        samesite="strict",
+        max_age=DASHBOARD_SESSION_TTL,
+    )
+    return response
+
+
+@app.get("/dashboard/logout", include_in_schema=False)
+async def dashboard_logout(request: Request):
+    """注销 session"""
+    token = request.cookies.get("dash_session")
+    if token:
+        await redis_pool.delete(f"{DASHBOARD_SESSION_PREFIX}{token}")
+
+    response = RedirectResponse("/dashboard/login", status_code=303)
+    response.delete_cookie("dash_session", path="/dashboard")
+    return response
+
+
+@app.get("/dashboard", response_class=HTMLResponse, include_in_schema=False)
+async def dashboard(request: Request):
+    """看板主页"""
+    if not await _check_dashboard_auth(request):
+        return RedirectResponse("/dashboard/login", status_code=303)
+
+    return HTMLResponse(_get_dashboard_html())
+
+
+@app.get("/dashboard/api/stats", include_in_schema=False)
+async def dashboard_api_stats(request: Request):
+    """看板数据 API（cookie 认证）"""
+    if not await _check_dashboard_auth(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    # Find all stats keys
+    db_ids = set()
+    async for key in redis_pool.scan_iter(f"{STATS_KEY_PREFIX}*:service"):
+        # mailagent:stats:{db_id}:service
+        parts = key.split(":")
+        if len(parts) >= 4:
+            db_ids.add(parts[2])
+
+    if not db_ids:
+        return JSONResponse({"online": False, "last_heartbeat": None, "data": None})
+
+    # For now, use the first (usually only) database_id
+    db_id = sorted(db_ids)[0]
+    key_prefix = f"{STATS_KEY_PREFIX}{db_id}"
+
+    # Fetch all sections
+    pipe = redis_pool.pipeline()
+    pipe.hgetall(f"{key_prefix}:service")
+    pipe.hgetall(f"{key_prefix}:watcher")
+    pipe.hgetall(f"{key_prefix}:reverse")
+    pipe.hgetall(f"{key_prefix}:redis_consumer")
+    pipe.hgetall(f"{key_prefix}:handlers")
+    pipe.lrange(f"{key_prefix}:alerts", 0, 49)
+    results = await pipe.execute()
+
+    service_raw, watcher_raw, reverse_raw, redis_raw, handlers_raw, alerts_raw = results
+
+    def _parse_hash(raw: dict) -> dict:
+        """Parse Redis hash values, trying JSON decode for complex values."""
+        parsed = {}
+        for k, v in raw.items():
+            try:
+                parsed[k] = json.loads(v)
+            except (json.JSONDecodeError, TypeError):
+                parsed[k] = v
+        return parsed
+
+    service = _parse_hash(service_raw)
+    watcher = _parse_hash(watcher_raw)
+    reverse_data = _parse_hash(reverse_raw)
+    redis_consumer = _parse_hash(redis_raw)
+    handlers = _parse_hash(handlers_raw)
+    alerts = [json.loads(a) for a in alerts_raw] if alerts_raw else []
+
+    # Determine online status
+    last_heartbeat = service.get("last_heartbeat")
+    try:
+        last_hb = int(float(last_heartbeat)) if last_heartbeat else 0
+    except (ValueError, TypeError):
+        last_hb = 0
+    online = (time.time() - last_hb) < STATS_TTL if last_hb else False
+
+    # Fetch queue info
+    queues = {}
+    async for key in redis_pool.scan_iter(f"{QUEUE_PREFIX}:*:events"):
+        q_db_id = key.split(":")[1]
+        length = await redis_pool.llen(key)
+        queues[q_db_id] = {"queue": key, "pending": length}
+
+    data = {
+        "service": service,
+        "watcher": watcher,
+        "reverse": reverse_data,
+        "redis_consumer": redis_consumer,
+        "handlers": handlers,
+        "queues": queues,
+        "alerts": alerts,
+    }
+
+    return JSONResponse({"online": online, "last_heartbeat": last_hb, "data": data})

@@ -39,7 +39,7 @@ class NotionSync:
         page_id = await self.create_email_page_v2(email)
         return page_id is not None
 
-    async def _upload_attachments(self, email: Email) -> tuple[List[Dict[str, Any]], List[str]]:
+    async def _upload_attachments(self, email: Email) -> "tuple[List[Dict[str, Any]], List[str]]":
         """上传邮件附件到 Notion
 
         使用 "伪装 PDF" 技巧自动处理不支持的扩展名（如 .eml），

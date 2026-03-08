@@ -1,0 +1,948 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MailAgent Dashboard</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0f172a;
+      --card: #1e293b;
+      --card-border: #334155;
+      --text: #e2e8f0;
+      --muted: #64748b;
+      --blue: #3b82f6;
+      --green: #22c55e;
+      --yellow: #eab308;
+      --red: #ef4444;
+      --orange: #f97316;
+      --radius: 10px;
+      --shadow: 0 4px 16px rgba(0,0,0,0.4);
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      font-size: 14px;
+      min-height: 100vh;
+    }
+
+    /* ── Header ── */
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 24px;
+      background: var(--card);
+      border-bottom: 1px solid var(--card-border);
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      gap: 12px;
+    }
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .header-title {
+      font-size: 18px;
+      font-weight: 700;
+      color: var(--text);
+      letter-spacing: 0.3px;
+    }
+    .header-badge {
+      font-size: 11px;
+      background: #3b82f620;
+      color: var(--blue);
+      border: 1px solid #3b82f640;
+      border-radius: 20px;
+      padding: 2px 9px;
+      font-weight: 600;
+    }
+    .header-right {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      flex-shrink: 0;
+    }
+    .header-update {
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .header-update span { color: var(--text); }
+    .logout-link {
+      color: var(--muted);
+      text-decoration: none;
+      font-size: 12px;
+      padding: 4px 12px;
+      border: 1px solid var(--card-border);
+      border-radius: 6px;
+      transition: color 0.2s, border-color 0.2s;
+    }
+    .logout-link:hover { color: var(--text); border-color: var(--muted); }
+
+    /* ── Layout ── */
+    .main {
+      padding: 20px 24px 40px;
+      max-width: 1400px;
+      margin: 0 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+    }
+
+    /* ── Card base ── */
+    .card {
+      background: var(--card);
+      border: 1px solid var(--card-border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 16px 20px;
+      transition: border-color 0.3s;
+    }
+    .card-title {
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      color: var(--muted);
+      margin-bottom: 14px;
+    }
+
+    /* ── Section: Service status row ── */
+    .service-row {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .service-chip {
+      background: var(--card);
+      border: 1px solid var(--card-border);
+      border-radius: 8px;
+      padding: 10px 16px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex: 1;
+      min-width: 160px;
+      box-shadow: var(--shadow);
+    }
+    .service-chip-label {
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+      white-space: nowrap;
+    }
+    .service-chip-value {
+      color: var(--text);
+      font-size: 13px;
+      font-weight: 600;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      margin-left: auto;
+    }
+    .status-dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .dot-green { background: var(--green); box-shadow: 0 0 6px var(--green); }
+    .dot-red   { background: var(--red);   box-shadow: 0 0 6px var(--red); }
+
+    /* ── Section: Sync overview ── */
+    .metrics-row {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 14px;
+    }
+    .metric-card {
+      background: var(--card);
+      border: 1px solid var(--card-border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 18px 20px;
+      position: relative;
+      overflow: hidden;
+      transition: transform 0.2s;
+    }
+    .metric-card:hover { transform: translateY(-2px); }
+    .metric-card::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 3px;
+      border-radius: var(--radius) var(--radius) 0 0;
+    }
+    .metric-card.blue::before  { background: var(--blue); }
+    .metric-card.green::before { background: var(--green); }
+    .metric-card.yellow::before{ background: var(--yellow); }
+    .metric-card.red::before   { background: var(--red); }
+    .metric-label {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.7px;
+      color: var(--muted);
+      margin-bottom: 8px;
+    }
+    .metric-value {
+      font-size: 36px;
+      font-weight: 700;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      line-height: 1;
+    }
+    .metric-card.blue  .metric-value { color: var(--blue); }
+    .metric-card.green .metric-value { color: var(--green); }
+    .metric-card.yellow.metric-value { color: var(--yellow); }
+    .metric-card.red   .metric-value { color: var(--red); }
+    .metric-sub {
+      margin-top: 6px;
+      font-size: 11px;
+      color: var(--muted);
+    }
+
+    .dead-letter-banner {
+      background: #ef444420;
+      border: 1px solid #ef444450;
+      border-radius: 8px;
+      padding: 10px 16px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: var(--red);
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .dead-letter-banner.hidden { display: none; }
+    .banner-icon { font-size: 16px; }
+
+    /* ── Section: Charts ── */
+    .charts-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+    }
+    .bar-list { display: flex; flex-direction: column; gap: 10px; }
+    .bar-item { display: flex; flex-direction: column; gap: 4px; }
+    .bar-header {
+      display: flex;
+      justify-content: space-between;
+      font-size: 12px;
+    }
+    .bar-name { color: var(--text); font-weight: 500; }
+    .bar-count { color: var(--muted); font-family: 'SF Mono', 'Fira Code', monospace; }
+    .bar-track {
+      height: 8px;
+      background: #ffffff10;
+      border-radius: 4px;
+      overflow: hidden;
+    }
+    .bar-fill {
+      height: 100%;
+      border-radius: 4px;
+      transition: width 0.5s ease;
+    }
+
+    .stacked-bar { display: flex; flex-direction: column; gap: 10px; }
+    .stacked-track {
+      height: 24px;
+      background: #ffffff10;
+      border-radius: 6px;
+      overflow: hidden;
+      display: flex;
+    }
+    .stacked-segment {
+      height: 100%;
+      transition: width 0.5s ease;
+      position: relative;
+    }
+    .stacked-legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .legend-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    /* ── Section: Reverse + Events ── */
+    .two-col {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+    }
+    .stat-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+    .stat-item { display: flex; flex-direction: column; gap: 3px; }
+    .stat-label { font-size: 11px; color: var(--muted); }
+    .stat-value {
+      font-size: 20px;
+      font-weight: 700;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      color: var(--text);
+    }
+    .stat-value.sm {
+      font-size: 14px;
+    }
+    .handler-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px 16px;
+    }
+    .handler-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 6px 0;
+      border-bottom: 1px solid #ffffff08;
+    }
+    .handler-label { color: var(--muted); font-size: 12px; }
+    .handler-value {
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text);
+    }
+
+    /* ── Section: Redis ── */
+    .redis-layout {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 20px;
+      align-items: start;
+    }
+    .queue-list { display: flex; flex-direction: column; gap: 6px; }
+    .queue-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 12px;
+      background: #ffffff05;
+      border-radius: 6px;
+      gap: 12px;
+    }
+    .queue-name {
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      font-size: 11px;
+      color: var(--muted);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .queue-pending {
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      font-size: 13px;
+      font-weight: 700;
+      padding: 2px 8px;
+      border-radius: 4px;
+      white-space: nowrap;
+    }
+    .queue-pending.zero  { color: var(--green); background: #22c55e15; }
+    .queue-pending.nonzero { color: var(--yellow); background: #eab30815; }
+    .consumer-stats {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      min-width: 140px;
+    }
+    .consumer-stat {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      padding: 8px 12px;
+      background: #ffffff05;
+      border-radius: 6px;
+    }
+    .consumer-label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+    .consumer-value {
+      font-size: 18px;
+      font-weight: 700;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      color: var(--text);
+    }
+
+    /* ── Section: Alerts ── */
+    .alerts-list {
+      max-height: 300px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .alerts-list::-webkit-scrollbar { width: 4px; }
+    .alerts-list::-webkit-scrollbar-track { background: transparent; }
+    .alerts-list::-webkit-scrollbar-thumb { background: var(--card-border); border-radius: 2px; }
+    .alert-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      padding: 10px 12px;
+      background: #ffffff04;
+      border-radius: 6px;
+      border-left: 3px solid transparent;
+    }
+    .alert-item.error  { border-left-color: var(--red);    background: #ef444408; }
+    .alert-item.warning{ border-left-color: var(--yellow); background: #eab30808; }
+    .alert-item.info   { border-left-color: var(--blue);   background: #3b82f608; }
+    .alert-ts {
+      font-size: 11px;
+      color: var(--muted);
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      white-space: nowrap;
+      flex-shrink: 0;
+      padding-top: 1px;
+    }
+    .alert-badge {
+      font-size: 10px;
+      font-weight: 700;
+      padding: 2px 6px;
+      border-radius: 4px;
+      text-transform: uppercase;
+      flex-shrink: 0;
+    }
+    .alert-badge.error   { background: #ef444420; color: var(--red); }
+    .alert-badge.warning { background: #eab30820; color: var(--yellow); }
+    .alert-badge.info    { background: #3b82f620; color: var(--blue); }
+    .alert-source {
+      font-size: 11px;
+      color: var(--muted);
+      flex-shrink: 0;
+      padding-top: 1px;
+    }
+    .alert-msg {
+      font-size: 12px;
+      color: var(--text);
+      flex: 1;
+      word-break: break-word;
+    }
+    .empty-state {
+      text-align: center;
+      padding: 32px 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .empty-icon { font-size: 28px; margin-bottom: 8px; }
+
+    /* ── Refresh indicator ── */
+    .refresh-pulse {
+      display: inline-block;
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--green);
+      margin-right: 4px;
+      animation: pulse 2s infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.3; }
+    }
+
+    /* ── Error banner ── */
+    .fetch-error {
+      background: #ef444415;
+      border: 1px solid #ef444430;
+      border-radius: 8px;
+      padding: 10px 16px;
+      color: var(--red);
+      font-size: 12px;
+      display: none;
+      align-items: center;
+      gap: 8px;
+    }
+    .fetch-error.show { display: flex; }
+
+    /* ── Responsive ── */
+    @media (max-width: 900px) {
+      .main { padding: 14px 14px 30px; gap: 14px; }
+      .metrics-row { grid-template-columns: repeat(2, 1fr); }
+      .charts-row  { grid-template-columns: 1fr; }
+      .two-col     { grid-template-columns: 1fr; }
+      .header-badge { display: none; }
+    }
+    @media (max-width: 600px) {
+      .metrics-row { grid-template-columns: 1fr 1fr; }
+      .service-row { gap: 8px; }
+      .service-chip { min-width: 130px; }
+      .metric-value { font-size: 28px; }
+      .redis-layout { grid-template-columns: 1fr; }
+      .header { padding: 12px 14px; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ── Header ── -->
+<header class="header">
+  <div class="header-left">
+    <span class="header-title">MailAgent Dashboard</span>
+    <span class="header-badge">v3 SQLite</span>
+  </div>
+  <div class="header-right">
+    <div class="header-update">
+      <span class="refresh-pulse"></span>
+      上次更新：<span id="last-update">--</span>
+    </div>
+    <a href="/dashboard/logout" class="logout-link">退出</a>
+  </div>
+</header>
+
+<main class="main">
+
+  <!-- Fetch error -->
+  <div class="fetch-error" id="fetch-error">
+    <span>⚠</span>
+    <span id="fetch-error-msg">无法获取数据</span>
+  </div>
+
+  <!-- 1. Service status row -->
+  <div class="service-row" id="service-row">
+    <div class="service-chip">
+      <div class="status-dot dot-red" id="status-dot"></div>
+      <span class="service-chip-label">状态</span>
+      <span class="service-chip-value" id="svc-status">离线</span>
+    </div>
+    <div class="service-chip">
+      <span class="service-chip-label">运行时长</span>
+      <span class="service-chip-value" id="svc-uptime">--</span>
+    </div>
+    <div class="service-chip">
+      <span class="service-chip-label">Python</span>
+      <span class="service-chip-value" id="svc-python">--</span>
+    </div>
+    <div class="service-chip">
+      <span class="service-chip-label">最近心跳</span>
+      <span class="service-chip-value" id="svc-heartbeat">--</span>
+    </div>
+    <div class="service-chip">
+      <span class="service-chip-label">Watcher</span>
+      <span class="service-chip-value" id="svc-watcher">--</span>
+    </div>
+    <div class="service-chip">
+      <span class="service-chip-label">Redis Consumer</span>
+      <span class="service-chip-value" id="svc-redis">--</span>
+    </div>
+  </div>
+
+  <!-- 2. Sync overview -->
+  <div>
+    <div class="metrics-row">
+      <div class="metric-card blue">
+        <div class="metric-label">总邮件</div>
+        <div class="metric-value" id="m-total">--</div>
+        <div class="metric-sub" id="m-polls">轮询: --</div>
+      </div>
+      <div class="metric-card green">
+        <div class="metric-label">已同步</div>
+        <div class="metric-value" id="m-synced">--</div>
+        <div class="metric-sub" id="m-detected">检测到: --</div>
+      </div>
+      <div class="metric-card yellow">
+        <div class="metric-label">待处理</div>
+        <div class="metric-value" id="m-pending" style="color:var(--yellow)">--</div>
+        <div class="metric-sub" id="m-skipped">跳过: --</div>
+      </div>
+      <div class="metric-card red">
+        <div class="metric-label">失败</div>
+        <div class="metric-value" id="m-failed" style="color:var(--red)">--</div>
+        <div class="metric-sub" id="m-errors">同步错误: --</div>
+      </div>
+    </div>
+    <div style="margin-top:10px">
+      <div class="dead-letter-banner hidden" id="dead-letter-banner">
+        <span class="banner-icon">☠</span>
+        <span id="dead-letter-text">Dead Letter 队列: 0 封邮件需人工处理</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- 3. Charts -->
+  <div class="charts-row">
+    <div class="card">
+      <div class="card-title">邮箱分布</div>
+      <div class="bar-list" id="mailbox-bars">
+        <div class="empty-state"><div class="empty-icon">📭</div>暂无数据</div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">状态分布</div>
+      <div class="stacked-bar" id="status-bar">
+        <div class="stacked-track" id="status-track">
+          <div style="width:100%;background:#ffffff10;height:100%"></div>
+        </div>
+        <div class="stacked-legend" id="status-legend">
+          <div class="empty-state" style="width:100%">暂无数据</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 4. Reverse sync + Events -->
+  <div class="two-col">
+    <div class="card">
+      <div class="card-title">反向同步</div>
+      <div class="stat-grid">
+        <div class="stat-item">
+          <div class="stat-label">已同步到 Mail</div>
+          <div class="stat-value" id="rev-synced">--</div>
+        </div>
+        <div class="stat-item">
+          <div class="stat-label">飞书已通知</div>
+          <div class="stat-value" id="rev-notified">--</div>
+        </div>
+        <div class="stat-item">
+          <div class="stat-label">错误次数</div>
+          <div class="stat-value" id="rev-errors" style="color:var(--red)">--</div>
+        </div>
+        <div class="stat-item">
+          <div class="stat-label">最后检查</div>
+          <div class="stat-value sm" id="rev-last">--</div>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">事件处理</div>
+      <div class="handler-grid">
+        <div class="handler-item">
+          <span class="handler-label">flag_changed</span>
+          <span class="handler-value" id="h-flag">--</span>
+        </div>
+        <div class="handler-item">
+          <span class="handler-label">ai_reviewed</span>
+          <span class="handler-value" id="h-ai">--</span>
+        </div>
+        <div class="handler-item">
+          <span class="handler-label">completed</span>
+          <span class="handler-value" id="h-completed">--</span>
+        </div>
+        <div class="handler-item">
+          <span class="handler-label">query_mail</span>
+          <span class="handler-value" id="h-query">--</span>
+        </div>
+        <div class="handler-item">
+          <span class="handler-label">create_draft ✓</span>
+          <span class="handler-value" style="color:var(--green)" id="h-draft-ok">--</span>
+        </div>
+        <div class="handler-item">
+          <span class="handler-label">create_draft ✗</span>
+          <span class="handler-value" style="color:var(--red)" id="h-draft-err">--</span>
+        </div>
+        <div class="handler-item">
+          <span class="handler-label">feishu_notified</span>
+          <span class="handler-value" style="color:var(--blue)" id="h-feishu">--</span>
+        </div>
+        <div class="handler-item">
+          <span class="handler-label">create_draft 总</span>
+          <span class="handler-value" id="h-draft-total">--</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 5. Redis -->
+  <div class="card">
+    <div class="card-title">Redis 队列 &amp; 消费者</div>
+    <div class="redis-layout">
+      <div>
+        <div class="queue-list" id="queue-list">
+          <div class="empty-state">暂无队列数据</div>
+        </div>
+      </div>
+      <div class="consumer-stats">
+        <div class="consumer-stat">
+          <div class="consumer-label">已接收</div>
+          <div class="consumer-value" id="rc-received">--</div>
+        </div>
+        <div class="consumer-stat">
+          <div class="consumer-label">已处理</div>
+          <div class="consumer-value" style="color:var(--green)" id="rc-processed">--</div>
+        </div>
+        <div class="consumer-stat">
+          <div class="consumer-label">错误</div>
+          <div class="consumer-value" style="color:var(--red)" id="rc-errors">--</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 6. Alerts -->
+  <div class="card">
+    <div class="card-title">告警记录</div>
+    <div class="alerts-list" id="alerts-list">
+      <div class="empty-state">
+        <div class="empty-icon">✅</div>
+        暂无告警
+      </div>
+    </div>
+  </div>
+
+</main>
+
+<script>
+  // ── Utilities ──────────────────────────────────────────────────
+  const $ = id => document.getElementById(id);
+  const fmt = n => (n == null || n === undefined || n === '') ? '--' : Number(n).toLocaleString('zh-CN');
+  const fmtSafe = n => (n == null) ? '--' : fmt(n);
+
+  function fmtUptime(secs) {
+    if (!secs && secs !== 0) return '--';
+    const d = Math.floor(secs / 86400);
+    const h = Math.floor((secs % 86400) / 3600);
+    const m = Math.floor((secs % 3600) / 60);
+    const parts = [];
+    if (d) parts.push(d + 'd');
+    if (h || d) parts.push(h + 'h');
+    parts.push(m + 'm');
+    return parts.join(' ');
+  }
+
+  function relativeTime(ts) {
+    if (!ts) return '--';
+    const diff = Math.floor(Date.now() / 1000) - ts;
+    if (diff < 0) return '刚刚';
+    if (diff < 60) return diff + '秒前';
+    if (diff < 3600) return Math.floor(diff / 60) + '分钟前';
+    if (diff < 86400) return Math.floor(diff / 3600) + '小时前';
+    return Math.floor(diff / 86400) + '天前';
+  }
+
+  function fmtDateTime(str) {
+    if (!str) return '--';
+    try {
+      const d = new Date(str);
+      if (isNaN(d)) return str;
+      return d.toLocaleString('zh-CN', { month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' });
+    } catch { return str; }
+  }
+
+  const STATUS_COLORS = {
+    synced:       '#22c55e',
+    fetched:      '#3b82f6',
+    pending:      '#eab308',
+    fetch_failed: '#f97316',
+    failed:       '#ef4444',
+    dead_letter:  '#dc2626',
+    skipped:      '#64748b',
+  };
+  const STATUS_LABELS = {
+    synced: '已同步', fetched: '已获取', pending: '待处理',
+    fetch_failed: '获取失败', failed: '失败', dead_letter: 'Dead Letter', skipped: '已跳过',
+  };
+  const MAILBOX_COLORS = [
+    '#3b82f6','#8b5cf6','#06b6d4','#22c55e','#f97316','#ec4899','#14b8a6','#a855f7'
+  ];
+
+  // ── Render functions ────────────────────────────────────────────
+  function renderServiceRow(data, online, lastHeartbeat) {
+    const svc = data?.service || {};
+    const watcher = data?.watcher || {};
+    const consumer = data?.redis_consumer || {};
+
+    const isOnline = !!online;
+    const dot = $('status-dot');
+    dot.className = 'status-dot ' + (isOnline ? 'dot-green' : 'dot-red');
+    $('svc-status').textContent = isOnline ? '在线' : '离线';
+    $('svc-uptime').textContent = fmtUptime(svc.uptime_seconds);
+    $('svc-python').textContent = svc.python_version || '--';
+    $('svc-heartbeat').textContent = relativeTime(lastHeartbeat);
+    $('svc-watcher').textContent = watcher.running ? '运行中' : '已停止';
+    $('svc-watcher').style.color = watcher.running ? 'var(--green)' : 'var(--red)';
+    $('svc-redis').textContent = consumer.running ? '运行中' : '已停止';
+    $('svc-redis').style.color = consumer.running ? 'var(--green)' : 'var(--red)';
+  }
+
+  function renderMetrics(w) {
+    w = w || {};
+    $('m-total').textContent     = fmtSafe(w.total_emails);
+    $('m-synced').textContent    = fmtSafe(w.synced);
+    $('m-pending').textContent   = fmtSafe(w.pending);
+    const failed = (w.failed || 0) + (w.fetch_failed || 0);
+    $('m-failed').textContent    = failed === 0 && !w.failed && !w.fetch_failed ? '--' : fmt(failed);
+    $('m-polls').textContent     = '轮询: ' + fmtSafe(w.polls);
+    $('m-detected').textContent  = '检测到: ' + fmtSafe(w.new_emails_detected);
+    $('m-skipped').textContent   = '跳过: ' + fmtSafe(w.skipped);
+    $('m-errors').textContent    = '同步错误: ' + fmtSafe(w.errors);
+
+    const dl = w.dead_letter || 0;
+    const banner = $('dead-letter-banner');
+    if (dl > 0) {
+      banner.classList.remove('hidden');
+      $('dead-letter-text').textContent = `Dead Letter 队列: ${fmt(dl)} 封邮件需人工处理`;
+    } else {
+      banner.classList.add('hidden');
+    }
+  }
+
+  function renderMailboxBars(byMailbox) {
+    const container = $('mailbox-bars');
+    if (!byMailbox || Object.keys(byMailbox).length === 0) {
+      container.innerHTML = '<div class="empty-state"><div class="empty-icon">📭</div>暂无数据</div>';
+      return;
+    }
+    const entries = Object.entries(byMailbox).sort((a, b) => b[1] - a[1]);
+    const max = entries[0][1] || 1;
+    container.innerHTML = entries.map(([name, count], i) => `
+      <div class="bar-item">
+        <div class="bar-header">
+          <span class="bar-name">${escHtml(name)}</span>
+          <span class="bar-count">${fmt(count)}</span>
+        </div>
+        <div class="bar-track">
+          <div class="bar-fill" style="width:${Math.round(count/max*100)}%;background:${MAILBOX_COLORS[i % MAILBOX_COLORS.length]}"></div>
+        </div>
+      </div>
+    `).join('');
+  }
+
+  function renderStatusBar(byStatus) {
+    const track = $('status-track');
+    const legend = $('status-legend');
+    if (!byStatus || Object.keys(byStatus).length === 0) {
+      track.innerHTML = '<div style="width:100%;background:#ffffff10;height:100%"></div>';
+      legend.innerHTML = '<div class="empty-state" style="width:100%">暂无数据</div>';
+      return;
+    }
+    const total = Object.values(byStatus).reduce((a, b) => a + b, 0) || 1;
+    const order = ['synced','fetched','pending','fetch_failed','failed','dead_letter','skipped'];
+    const segments = order.filter(k => byStatus[k] > 0).map(k => ({
+      key: k, count: byStatus[k], pct: Math.max(1, Math.round(byStatus[k]/total*100))
+    }));
+    // Add any unknown keys
+    Object.entries(byStatus).forEach(([k, v]) => {
+      if (!order.includes(k) && v > 0) segments.push({ key: k, count: v, pct: Math.max(1, Math.round(v/total*100)) });
+    });
+
+    track.innerHTML = segments.map(s =>
+      `<div class="stacked-segment" style="width:${s.pct}%;background:${STATUS_COLORS[s.key] || '#94a3b8'}" title="${STATUS_LABELS[s.key]||s.key}: ${fmt(s.count)}"></div>`
+    ).join('');
+
+    legend.innerHTML = segments.map(s =>
+      `<div class="legend-item"><div class="legend-dot" style="background:${STATUS_COLORS[s.key]||'#94a3b8'}"></div>${STATUS_LABELS[s.key]||s.key} <strong style="color:var(--text);margin-left:3px">${fmt(s.count)}</strong></div>`
+    ).join('');
+  }
+
+  function renderReverse(rev) {
+    rev = rev || {};
+    $('rev-synced').textContent   = fmtSafe(rev.total_synced);
+    $('rev-notified').textContent = fmtSafe(rev.total_notified);
+    $('rev-errors').textContent   = fmtSafe(rev.total_errors);
+    $('rev-last').textContent     = fmtDateTime(rev.last_check);
+  }
+
+  function renderHandlers(h) {
+    h = h || {};
+    $('h-flag').textContent       = fmtSafe(h.flag_changed);
+    $('h-ai').textContent         = fmtSafe(h.ai_reviewed);
+    $('h-completed').textContent  = fmtSafe(h.completed);
+    $('h-query').textContent      = fmtSafe(h.query_mail);
+    $('h-draft-ok').textContent   = fmtSafe(h.create_draft_success);
+    $('h-draft-err').textContent  = fmtSafe(h.create_draft_error);
+    $('h-feishu').textContent     = fmtSafe(h.feishu_notified);
+    $('h-draft-total').textContent = fmtSafe(h.create_draft);
+  }
+
+  function renderQueues(queues, consumer) {
+    const qList = $('queue-list');
+    if (!queues || Object.keys(queues).length === 0) {
+      qList.innerHTML = '<div class="empty-state">暂无队列数据</div>';
+    } else {
+      qList.innerHTML = Object.values(queues).map(q => {
+        const pending = q.pending ?? 0;
+        return `
+          <div class="queue-item">
+            <span class="queue-name">${escHtml(q.queue || '--')}</span>
+            <span class="queue-pending ${pending === 0 ? 'zero' : 'nonzero'}">${pending === 0 ? '空' : fmt(pending) + ' 待处理'}</span>
+          </div>
+        `;
+      }).join('');
+    }
+    consumer = consumer || {};
+    $('rc-received').textContent  = fmtSafe(consumer.received);
+    $('rc-processed').textContent = fmtSafe(consumer.processed);
+    $('rc-errors').textContent    = fmtSafe(consumer.errors);
+  }
+
+  function renderAlerts(alerts) {
+    const container = $('alerts-list');
+    if (!alerts || alerts.length === 0) {
+      container.innerHTML = '<div class="empty-state"><div class="empty-icon">✅</div>暂无告警</div>';
+      return;
+    }
+    // Sort newest first
+    const sorted = [...alerts].sort((a, b) => (b.ts || 0) - (a.ts || 0));
+    container.innerHTML = sorted.map(a => {
+      const lvl = a.level || 'info';
+      const ts = a.ts ? new Date(a.ts * 1000).toLocaleString('zh-CN', {
+        month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit'
+      }) : '--';
+      return `
+        <div class="alert-item ${lvl}">
+          <span class="alert-ts">${ts}</span>
+          <span class="alert-badge ${lvl}">${lvl === 'error' ? '错误' : lvl === 'warning' ? '警告' : '信息'}</span>
+          <span class="alert-source">[${escHtml(a.source || '?')}]</span>
+          <span class="alert-msg">${escHtml(a.message || '')}</span>
+        </div>
+      `;
+    }).join('');
+  }
+
+  function escHtml(str) {
+    return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  // ── Fetch & render ─────────────────────────────────────────────
+  let lastData = null;
+
+  async function fetchAndRender() {
+    try {
+      const resp = await fetch('/dashboard/api/stats', { cache: 'no-store' });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const json = await resp.json();
+      $('fetch-error').classList.remove('show');
+
+      lastData = json;
+      const d = json.data || {};
+      const online = json.online;
+      const lastHeartbeat = json.last_heartbeat;
+
+      renderServiceRow(d, online, lastHeartbeat);
+      renderMetrics(d.watcher);
+      renderMailboxBars(d.watcher?.by_mailbox);
+      renderStatusBar(d.watcher?.by_status);
+      renderReverse(d.reverse);
+      renderHandlers(d.handlers);
+      renderQueues(d.queues, d.redis_consumer);
+      renderAlerts(d.alerts);
+
+      $('last-update').textContent = new Date().toLocaleTimeString('zh-CN');
+    } catch (err) {
+      $('fetch-error').classList.add('show');
+      $('fetch-error-msg').textContent = '数据获取失败：' + err.message;
+    }
+  }
+
+  // Initial render with placeholder
+  fetchAndRender();
+  setInterval(fetchAndRender, 10000);
+</script>
+</body>
+</html>

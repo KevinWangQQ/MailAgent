@@ -346,7 +346,7 @@ class EmailReader:
         """获取邮件原始源码"""
         return self.scripts.get_email_source(message_id, self.account, self.inbox)
 
-    def _extract_from_source(self, message_id: str) -> tuple[Optional[str], Optional[str], dict, list, Optional[datetime]]:
+    def _extract_from_source(self, message_id: str) -> "tuple[Optional[str], Optional[str], dict, list, Optional[datetime]]":
         """
         从邮件源码中提取HTML内容、Thread ID、Content-ID 映射、内联图片数据和日期
 

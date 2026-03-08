@@ -18,7 +18,7 @@
 - 支持大邮箱（6-7 万封邮件）
 
 **技术栈：**
-- Python 3.11+ / asyncio
+- Python >=3.9（本地开发 3.11+，远程 webhook-server 3.9+）
 - AppleScript（Mail.app 交互）
 - SQLite（状态存储 + 变化检测）
 - Notion API（notion-client）
@@ -53,7 +53,19 @@ tail -f logs/sync.log
 
 # 部署 webhook-server 到远程服务器
 ./scripts/deploy-webhook.sh
+
+# 远程服务器 venv 初始化（首次部署或升级 Python 后）
+# ssh 到远程后: cd /home/lighthouse/MailAgent/webhook-server && python3 -m venv venv
 ```
+
+### 部署环境
+
+| 环境 | Python 版本 | 用途 |
+|------|-----------|------|
+| 本地 macOS | 3.11+ | main.py 邮件同步主服务 |
+| 远程 VPS (106.52.146.114) | 3.9+ | webhook-server FastAPI 服务 |
+
+> `pyproject.toml` 声明 `requires-python = ">=3.9"`，代码已兼容 Python 3.9+。
 
 ## 架构
 
@@ -130,6 +142,12 @@ tail -f logs/sync.log
 |------|------|
 | `feishu.py` | 飞书应用机器人通知（App Bot API + 交互式卡片按钮回调 Openclaw） |
 
+#### 监控模块 (`src/`)
+
+| 模块 | 职责 |
+|------|------|
+| `stats_reporter.py` | 定期上报运行统计到远程看板（sync/reverse/handlers/alerts） |
+
 #### 事件模块 (`src/events/`)
 
 | 模块 | 职责 |
@@ -141,7 +159,8 @@ tail -f logs/sync.log
 
 | 模块 | 职责 |
 |------|------|
-| `app.py` | FastAPI 服务，接收 Notion Automation webhook → Redis 队列路由 |
+| `app.py` | FastAPI 服务，接收 Notion Automation webhook → Redis 队列路由 + 看板 API |
+| `dashboard.html` | 监控看板前端（同步概览、服务状态、告警、Redis 队列） |
 | `ecosystem.config.js` | PM2 进程配置（端口 8100） |
 | `deploy.md` | 服务器部署指南 |
 | `../scripts/deploy-webhook.sh` | 一键部署脚本（`sshpass` + SSH） |
@@ -440,6 +459,20 @@ CREATE TABLE thread_head_cache (
 | `REDIS_URL` | `""` | Redis 连接 URL |
 | `REDIS_DB` | `2` | Redis DB 号（MailAgent 专用） |
 | `REDIS_EVENTS_ENABLED` | `false` | 是否启用 Redis 事件消费 |
+
+### 看板统计上报配置
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `STATS_REPORT_URL` | `""` | 看板上报 URL（如 `https://mailagent.chenge.ink/api/stats/report`） |
+| `STATS_REPORT_INTERVAL` | `60` | 上报间隔（秒） |
+| `STATS_REPORT_TOKEN` | `""` | 上报认证 token |
+
+### Webhook Server 看板配置
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `DASHBOARD_PASSWORD` | `""` | 看板登录密码（为空则禁用看板） |
 
 ## Notion 数据库结构
 
