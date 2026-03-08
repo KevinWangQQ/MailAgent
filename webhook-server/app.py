@@ -187,6 +187,8 @@ class CommandResponse(BaseModel):
 
 class CommandResultResponse(BaseModel):
     """指令执行结果"""
+    model_config = {"extra": "allow"}
+
     status: str = Field(
         ...,
         description=(
