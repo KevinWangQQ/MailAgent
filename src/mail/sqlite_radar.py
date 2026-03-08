@@ -411,6 +411,159 @@ class SQLiteRadar:
 
         return None
 
+    def search_all_emails(self, filters: Dict, limit: int = 10, offset: int = 0) -> Dict:
+        """搜索 Mail.app 所有邮件元数据（直接查 Envelope Index）
+
+        覆盖收发件箱全部邮件（~24k+），不依赖 SyncStore。
+
+        Args:
+            filters: 筛选条件字典，支持的 key：
+                - query: 全文模糊搜索（匹配 subject + sender address/name）
+                - from: 发件人筛选（LIKE 匹配）
+                - subject: 主题筛选（LIKE 匹配）
+                - date_from: 起始日期 YYYY-MM-DD
+                - date_to: 截止日期 YYYY-MM-DD
+                - mailbox: 邮箱名（收件箱/发件箱）
+                - is_flagged: 旗标状态
+                - is_read: 已读状态
+            limit: 最大返回数量（上限 50）
+            offset: 分页偏移
+
+        Returns:
+            {"total": int, "limit": int, "offset": int, "emails": [...]}
+        """
+        if not self.db_path:
+            return {"total": 0, "limit": limit, "offset": offset, "emails": []}
+
+        limit = min(limit, 50)
+        mailbox_filter = self._build_mailbox_filter()
+        conditions = [f"m.deleted = 0", mailbox_filter]
+        params: list = []
+
+        # 全文模糊搜索
+        query = filters.get("query")
+        if query:
+            conditions.append(
+                "(COALESCE(m.subject_prefix, '') || COALESCE(s.subject, '') LIKE ?"
+                " OR a.address LIKE ? OR a.comment LIKE ?)"
+            )
+            like_val = f"%{query}%"
+            params.extend([like_val, like_val, like_val])
+
+        # 发件人
+        from_filter = filters.get("from")
+        if from_filter:
+            conditions.append("(a.address LIKE ? OR a.comment LIKE ?)")
+            like_val = f"%{from_filter}%"
+            params.extend([like_val, like_val])
+
+        # 主题
+        subject_filter = filters.get("subject")
+        if subject_filter:
+            conditions.append(
+                "COALESCE(m.subject_prefix, '') || COALESCE(s.subject, '') LIKE ?"
+            )
+            params.append(f"%{subject_filter}%")
+
+        # 日期范围
+        date_from = filters.get("date_from")
+        if date_from:
+            try:
+                from datetime import datetime
+                dt = datetime.strptime(date_from, "%Y-%m-%d")
+                conditions.append("m.date_received >= ?")
+                params.append(dt.timestamp())
+            except ValueError:
+                pass
+
+        date_to = filters.get("date_to")
+        if date_to:
+            try:
+                from datetime import datetime
+                dt = datetime.strptime(date_to, "%Y-%m-%d")
+                # 截止日期包含当天
+                conditions.append("m.date_received <= ?")
+                params.append(dt.timestamp() + 86399)
+            except ValueError:
+                pass
+
+        # 邮箱名筛选（进一步过滤）
+        mailbox = filters.get("mailbox")
+        if mailbox:
+            mb_patterns = get_sqlite_patterns(mailbox)
+            if mb_patterns:
+                mb_conds = [f"mb.url LIKE '%{p}%'" for p in mb_patterns
+                            if p and all(c.isalnum() or c in '%_-' for c in p)]
+                if mb_conds:
+                    conditions.append(f"({' OR '.join(mb_conds)})")
+
+        # 旗标/已读
+        is_flagged = filters.get("is_flagged")
+        if is_flagged is not None:
+            conditions.append("m.flagged = ?")
+            params.append(1 if is_flagged else 0)
+
+        is_read = filters.get("is_read")
+        if is_read is not None:
+            conditions.append("m.read = ?")
+            params.append(1 if is_read else 0)
+
+        where_clause = " AND ".join(conditions)
+
+        try:
+            with self._connection() as conn:
+                cursor = conn.cursor()
+
+                # 总数
+                cursor.execute(f"""
+                    SELECT COUNT(*) as cnt
+                    FROM messages m
+                    LEFT JOIN subjects s ON m.subject = s.ROWID
+                    LEFT JOIN addresses a ON m.sender = a.ROWID
+                    LEFT JOIN mailboxes mb ON m.mailbox = mb.ROWID
+                    WHERE {where_clause}
+                """, params)
+                total = cursor.fetchone()["cnt"]
+
+                # 数据
+                cursor.execute(f"""
+                    SELECT
+                        m.ROWID as internal_id,
+                        COALESCE(m.subject_prefix, '') || COALESCE(s.subject, '') as subject,
+                        a.address as sender_email,
+                        a.comment as sender_name,
+                        datetime(m.date_received, 'unixepoch', 'localtime') as date_received,
+                        m.read as is_read,
+                        m.flagged as is_flagged,
+                        mb.url as mailbox_url
+                    FROM messages m
+                    LEFT JOIN subjects s ON m.subject = s.ROWID
+                    LEFT JOIN addresses a ON m.sender = a.ROWID
+                    LEFT JOIN mailboxes mb ON m.mailbox = mb.ROWID
+                    WHERE {where_clause}
+                    ORDER BY m.date_received DESC
+                    LIMIT ? OFFSET ?
+                """, params + [limit, offset])
+
+                emails = []
+                for row in cursor.fetchall():
+                    emails.append({
+                        "internal_id": row["internal_id"],
+                        "subject": row["subject"] or "",
+                        "sender": row["sender_email"] or "",
+                        "sender_name": row["sender_name"] or "",
+                        "date_received": row["date_received"] or "",
+                        "mailbox": self._parse_mailbox_url(row["mailbox_url"]),
+                        "is_read": bool(row["is_read"]),
+                        "is_flagged": bool(row["is_flagged"]),
+                    })
+
+                return {"total": total, "limit": limit, "offset": offset, "emails": emails}
+
+        except Exception as e:
+            logger.error(f"search_all_emails failed: {e}")
+            return {"total": 0, "limit": limit, "offset": offset, "emails": []}
+
     def _parse_mailbox_url(self, url: str) -> str:
         """解析 mailbox URL 提取中文邮箱名称
 

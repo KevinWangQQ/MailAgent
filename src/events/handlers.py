@@ -39,6 +39,7 @@ class EventHandlers:
         self.feishu = feishu
         self.notion_sync = notion_sync
         self._result_callback = result_callback
+        self._radar = None  # 延迟初始化
         self._stats = {
             "flag_changed": 0,
             "ai_reviewed": 0,
@@ -47,6 +48,7 @@ class EventHandlers:
             "create_draft_success": 0,
             "create_draft_error": 0,
             "query_mail": 0,
+            "fetch_mail_content": 0,
             "feishu_notified": 0,
         }
 
@@ -343,11 +345,28 @@ class EventHandlers:
         except Exception:
             pass
 
+    def _get_radar(self):
+        """延迟初始化 SQLite Radar（用于搜索 Mail.app 全量邮件）"""
+        if self._radar is None:
+            from src.mail.sqlite_radar import SQLiteRadar
+            from src.config import config
+            self._radar = SQLiteRadar(
+                mailboxes=[mb.strip() for mb in config.sync_mailboxes.split(',') if mb.strip()] or ["收件箱"],
+                account_url_prefix=config.mail_account_url_prefix,
+            )
+        return self._radar
+
     async def handle_query_mail(self, event: Dict):
-        """查询邮件元数据（纯读操作，基于 SyncStore SQLite 查询）"""
+        """查询邮件元数据
+
+        支持两种数据源：
+        - source=syncstore（默认）: 查 SyncStore，仅已同步邮件
+        - source=mail: 查 Mail.app SQLite Envelope Index，覆盖全部邮件
+        """
         self._stats["query_mail"] += 1
         props = event.get("properties", {})
         event_id = event.get("id", "")
+        source = props.get("source", "syncstore")
 
         # 提取查询参数
         filters = {}
@@ -356,27 +375,155 @@ class EventHandlers:
             if val:
                 filters[key] = val
 
-        for key in ("is_flagged", "is_read", "has_notion"):
+        for key in ("is_flagged", "is_read"):
             val = props.get(key)
             if val is not None:
                 filters[key] = bool(val)
 
+        # has_notion 仅 syncstore 模式支持
+        if source == "syncstore":
+            val = props.get("has_notion")
+            if val is not None:
+                filters["has_notion"] = bool(val)
+
         limit = min(int(props.get("limit", 10)), 50)
         offset = int(props.get("offset", 0))
 
-        logger.info(f"query_mail: filters={filters} limit={limit} offset={offset}")
+        logger.info(f"query_mail: source={source} filters={filters} limit={limit} offset={offset}")
 
-        result = self.sync_store.search_emails(filters, limit=limit, offset=offset)
+        if source == "mail":
+            # 直接查 Mail.app SQLite（覆盖全部 ~24k 邮件）
+            radar = self._get_radar()
+            if not radar.is_available():
+                await self._publish(event_id, {"status": "error", "error": "Mail.app SQLite not available"})
+                return
+            result = radar.search_all_emails(filters, limit=limit, offset=offset)
+            # 附加 SyncStore 中的 Notion 信息（如果有）
+            for email in result["emails"]:
+                iid = email.get("internal_id")
+                record = self.sync_store.get(iid)
+                if record:
+                    page_id = record.get("notion_page_id")
+                    if page_id:
+                        email["notion_page_id"] = page_id
+                        email["notion_url"] = f"https://www.notion.so/{page_id.replace('-', '')}"
+                    email["sync_status"] = record.get("sync_status")
+        else:
+            # 查 SyncStore（仅已同步邮件）
+            result = self.sync_store.search_emails(filters, limit=limit, offset=offset)
+            notion_base = "https://www.notion.so/"
+            for email in result["emails"]:
+                page_id = email.get("notion_page_id")
+                if page_id:
+                    email["notion_url"] = f"{notion_base}{page_id.replace('-', '')}"
 
-        # 为有 notion_page_id 的邮件附加 notion_url
-        notion_base = "https://www.notion.so/"
-        for email in result["emails"]:
-            page_id = email.get("notion_page_id")
-            if page_id:
-                email["notion_url"] = f"{notion_base}{page_id.replace('-', '')}"
-
+        result["source"] = source
         await self._publish(event_id, {"status": "success", **result})
-        logger.info(f"query_mail: returned {len(result['emails'])}/{result['total']} emails")
+        logger.info(f"query_mail: source={source} returned {len(result['emails'])}/{result['total']} emails")
+
+    async def handle_fetch_mail_content(self, event: Dict):
+        """获取邮件完整内容（通过 AppleScript + internal_id）
+
+        用于检索历史邮件正文，~1s/封。
+
+        请求参数:
+            internal_id: int (必填)
+            mailbox: str (可选，指定可加速)
+            format: "full" | "text" | "summary" (默认 full)
+
+        返回:
+            full: message_id, subject, sender, date, content(纯文本), html, is_read, is_flagged
+            text: subject, sender, date, content(纯文本)
+            summary: subject, sender, date, content前500字
+        """
+        self._stats["fetch_mail_content"] += 1
+        props = event.get("properties", {})
+        event_id = event.get("id", "")
+
+        internal_id = props.get("internal_id")
+        if not internal_id:
+            await self._publish(event_id, {"status": "error", "error": "Missing required: internal_id"})
+            return
+
+        internal_id = int(internal_id)
+        mailbox = props.get("mailbox")
+        fmt = props.get("format", "full")
+
+        logger.info(f"fetch_mail_content: internal_id={internal_id} mailbox={mailbox} format={fmt}")
+
+        # AppleScript 获取完整内容（~1s）
+        full_email = self.arm.fetch_email_content_by_id(internal_id, mailbox)
+        if not full_email:
+            await self._publish(event_id, {
+                "status": "error",
+                "error": f"Failed to fetch email {internal_id}. Mail.app may not be running or email was deleted.",
+            })
+            return
+
+        # 解析 MIME 获取 HTML 正文
+        source = full_email.get("source", "")
+        html_body = ""
+        plain_body = full_email.get("content", "")
+
+        if source:
+            try:
+                import email as email_lib
+                msg = email_lib.message_from_string(source)
+                for part in msg.walk():
+                    ct = part.get_content_type()
+                    if ct == "text/html" and not html_body:
+                        charset = part.get_content_charset() or "utf-8"
+                        payload = part.get_payload(decode=True)
+                        if payload:
+                            html_body = payload.decode(charset, errors="replace")
+                    elif ct == "text/plain" and not plain_body:
+                        charset = part.get_content_charset() or "utf-8"
+                        payload = part.get_payload(decode=True)
+                        if payload:
+                            plain_body = payload.decode(charset, errors="replace")
+            except Exception as e:
+                logger.warning(f"MIME parse error for {internal_id}: {e}")
+
+        # 根据 format 构建返回
+        if fmt == "summary":
+            result_data = {
+                "internal_id": internal_id,
+                "subject": full_email.get("subject", ""),
+                "sender": full_email.get("sender", ""),
+                "date": full_email.get("date", ""),
+                "content": plain_body[:500] + ("..." if len(plain_body) > 500 else ""),
+            }
+        elif fmt == "text":
+            result_data = {
+                "internal_id": internal_id,
+                "subject": full_email.get("subject", ""),
+                "sender": full_email.get("sender", ""),
+                "date": full_email.get("date", ""),
+                "content": plain_body,
+            }
+        else:  # full
+            result_data = {
+                "internal_id": internal_id,
+                "message_id": full_email.get("message_id", ""),
+                "subject": full_email.get("subject", ""),
+                "sender": full_email.get("sender", ""),
+                "date": full_email.get("date", ""),
+                "content": plain_body,
+                "html": html_body,
+                "is_read": full_email.get("is_read", False),
+                "is_flagged": full_email.get("is_flagged", False),
+                "thread_id": full_email.get("thread_id", ""),
+            }
+
+        # 附加 Notion 信息
+        record = self.sync_store.get(internal_id)
+        if record and record.get("notion_page_id"):
+            pid = record["notion_page_id"]
+            result_data["notion_page_id"] = pid
+            result_data["notion_url"] = f"https://www.notion.so/{pid.replace('-', '')}"
+
+        await self._publish(event_id, {"status": "success", **result_data})
+        logger.info(f"fetch_mail_content: returned {fmt} for {internal_id}")
 
     async def handle_page_updated(self, event: Dict):
         """通用事件: 根据内容自动判断"""
