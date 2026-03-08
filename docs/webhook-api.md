@@ -72,12 +72,14 @@ Flat JSON，`database_id` 和 `command` 为必填，其余字段自动透传为 
 | `flag_changed` | 同步旗标/已读状态到 Mail.app | `message_id` + `is_read`/`is_flagged` |
 | `ai_reviewed` | AI 审核完成 → 飞书通知 + 标旗 | `message_id` + `ai_action` + `ai_priority` |
 | `completed` | 标记已完成 → 移除 Mail.app 旗标 | `message_id` |
-| `query_mail` | 搜索邮件元数据（纯读操作） | 至少一个筛选条件 |
+| `query_mail` | 搜索邮件元数据 | 至少一个筛选条件 |
+| `fetch_mail_content` | 获取邮件完整正文 | `internal_id` |
 
 #### `query_mail` 字段
 
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 |------|------|------|--------|------|
+| `source` | string | 否 | `syncstore` | 数据源：`syncstore`（仅已同步邮件）/ `mail`（Mail.app 全量邮件） |
 | `query` | string | 否 | | 全文模糊搜索（匹配 subject + sender + sender_name） |
 | `from` | string | 否 | | 发件人筛选（LIKE 匹配 sender 或 sender_name） |
 | `subject` | string | 否 | | 主题筛选（LIKE 匹配） |
@@ -86,17 +88,27 @@ Flat JSON，`database_id` 和 `command` 为必填，其余字段自动透传为 
 | `mailbox` | string | 否 | | 邮箱名（`收件箱` / `发件箱`） |
 | `is_flagged` | bool | 否 | | 旗标状态 |
 | `is_read` | bool | 否 | | 已读状态 |
-| `has_notion` | bool | 否 | | 是否已同步到 Notion |
+| `has_notion` | bool | 否 | | 是否已同步到 Notion（仅 `syncstore` 模式） |
 | `limit` | int | 否 | `10` | 最大返回数量（上限 50） |
 | `offset` | int | 否 | `0` | 分页偏移 |
+
+**`source` 参数说明**：
+
+| source | 搜索范围 | 性能 | 适用场景 |
+|--------|---------|------|---------|
+| `syncstore` | 仅已同步到 Notion 的邮件（~2700 封） | <10ms | 查找已知邮件的 Notion 页面 |
+| `mail` | Mail.app 全部邮件（~24000 封） | <150ms | **搜索历史邮件、未同步邮件** |
 
 **筛选条件均可选，组合使用**。至少提供一个筛选条件。
 
 **返回结构**（通过 `/api/command/{event_id}/result` 获取）：
 
+`source=syncstore` 返回：
+
 ```json
 {
   "status": "success",
+  "source": "syncstore",
   "total": 42,
   "limit": 10,
   "offset": 0,
@@ -115,6 +127,80 @@ Flat JSON，`database_id` 和 `command` 为必填，其余字段自动透传为 
       "notion_url": "https://www.notion.so/31a15375830d81798e75fcfce933808b"
     }
   ]
+}
+```
+
+`source=mail` 返回（注意：无 `message_id` 字段，有 `sync_status` 和 `notion_page_id` 如果已同步）：
+
+```json
+{
+  "status": "success",
+  "source": "mail",
+  "total": 1769,
+  "limit": 10,
+  "offset": 0,
+  "emails": [
+    {
+      "internal_id": 35201,
+      "subject": "答复: 6.0页面还原问题",
+      "sender": "xie.juyi@tp-link.com",
+      "sender_name": "谢居怡",
+      "date_received": "2025-06-30 23:49:50",
+      "mailbox": "收件箱",
+      "is_read": true,
+      "is_flagged": false,
+      "sync_status": "skipped",
+      "notion_page_id": null,
+      "notion_url": null
+    }
+  ]
+}
+```
+
+#### `fetch_mail_content` 字段
+
+通过 AppleScript 获取邮件完整正文（~1-3s/封）。用于 `query_mail` 初筛定位后，获取特定邮件的详细内容。
+
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| `internal_id` | int | **是** | | 邮件内部 ID（从 `query_mail` 结果获取） |
+| `mailbox` | string | 否 | | 邮箱名（指定可加速查询） |
+| `format` | string | 否 | `full` | 返回格式：`full` / `text` / `summary` |
+
+**返回格式对比**：
+
+| format | 返回字段 | 适用场景 |
+|--------|---------|---------|
+| `full` | internal_id, message_id, subject, sender, date, content(纯文本), html(HTML正文), is_read, is_flagged, thread_id, notion_page_id, notion_url | 完整邮件内容 |
+| `text` | internal_id, subject, sender, date, content(纯文本) | 仅需文本正文 |
+| `summary` | internal_id, subject, sender, date, content(前500字) | 快速预览 |
+
+**`full` 格式返回结构**：
+
+```json
+{
+  "status": "success",
+  "internal_id": 48086,
+  "message_id": "<FR3P281MB2204...@FR3P281MB2204.DEUP281.PROD.OUTLOOK.COM>",
+  "subject": "AW: Catch Up meeting SaaS 2026 Plan",
+  "sender": "Patrick Hirscher <patrick.hirscher@tp-link.com>",
+  "date": "2026-03-04T23:56:09",
+  "content": "Hi Lucien,\n\nperfect that sounds like a plan...",
+  "html": "<html><body><p>Hi Lucien,</p>...</body></html>",
+  "is_read": true,
+  "is_flagged": false,
+  "thread_id": "FR3P281MB2204...",
+  "notion_page_id": "31a15375830d81798e75fcfce933808b",
+  "notion_url": "https://www.notion.so/31a15375830d81798e75fcfce933808b"
+}
+```
+
+**错误返回**：
+
+```json
+{
+  "status": "error",
+  "error": "Failed to fetch email 99999. Mail.app may not be running or email was deleted."
 }
 ```
 
@@ -320,10 +406,10 @@ curl -s -X POST https://mailagent.chenge.ink/api/command \
   }"
 ```
 
-### 示例 5: 搜索邮件（query_mail）
+### 示例 5: 搜索已同步邮件（query_mail，默认模式）
 
 ```bash
-# 搜索包含 "OKR" 的邮件
+# 搜索包含 "OKR" 的已同步邮件
 RESPONSE=$(curl -s -X POST https://mailagent.chenge.ink/api/command \
   -H "Content-Type: application/json" \
   -H "X-Webhook-Token: $TOKEN" \
@@ -339,37 +425,83 @@ EVENT_ID=$(echo "$RESPONSE" | jq -r '.event_id')
 # 等待结果
 curl -s "https://mailagent.chenge.ink/api/command/$EVENT_ID/result?wait=10" \
   -H "X-Webhook-Token: $TOKEN"
-# {"status":"success","total":3,"limit":5,"offset":0,"emails":[...]}
+# {"status":"success","source":"syncstore","total":3,"limit":5,"offset":0,"emails":[...]}
+```
+
+### 示例 6: 搜索 Mail.app 全量邮件（query_mail source=mail）
+
+```bash
+# 搜索 Mail.app 所有邮件（包括未同步到 Notion 的历史邮件）
+RESPONSE=$(curl -s -X POST https://mailagent.chenge.ink/api/command \
+  -H "Content-Type: application/json" \
+  -H "X-Webhook-Token: $TOKEN" \
+  -d "{
+    \"database_id\": \"$DB_ID\",
+    \"command\": \"query_mail\",
+    \"source\": \"mail\",
+    \"query\": \"SaaS\",
+    \"limit\": 10
+  }")
+
+EVENT_ID=$(echo "$RESPONSE" | jq -r '.event_id')
+
+curl -s "https://mailagent.chenge.ink/api/command/$EVENT_ID/result?wait=10" \
+  -H "X-Webhook-Token: $TOKEN"
+# {"status":"success","source":"mail","total":61,"limit":10,"offset":0,"emails":[...]}
 ```
 
 ```bash
-# 查找某人的未读邮件
+# 搜索 2025 年 6 月某人发的邮件
 curl -s -X POST https://mailagent.chenge.ink/api/command \
   -H "Content-Type: application/json" \
   -H "X-Webhook-Token: $TOKEN" \
   -d "{
     \"database_id\": \"$DB_ID\",
     \"command\": \"query_mail\",
-    \"from\": \"alice\",
-    \"is_read\": false
+    \"source\": \"mail\",
+    \"from\": \"patrick\",
+    \"date_from\": \"2025-06-01\",
+    \"date_to\": \"2025-06-30\"
   }"
 ```
 
+### 示例 7: 获取邮件正文（fetch_mail_content）
+
 ```bash
-# 日期范围 + 旗标邮件
+# 从 query_mail 结果中拿到 internal_id，获取完整正文
+RESPONSE=$(curl -s -X POST https://mailagent.chenge.ink/api/command \
+  -H "Content-Type: application/json" \
+  -H "X-Webhook-Token: $TOKEN" \
+  -d "{
+    \"database_id\": \"$DB_ID\",
+    \"command\": \"fetch_mail_content\",
+    \"internal_id\": 48086,
+    \"mailbox\": \"收件箱\",
+    \"format\": \"full\"
+  }")
+
+EVENT_ID=$(echo "$RESPONSE" | jq -r '.event_id')
+
+# 等待结果（AppleScript 获取 ~1-3s）
+curl -s "https://mailagent.chenge.ink/api/command/$EVENT_ID/result?wait=10" \
+  -H "X-Webhook-Token: $TOKEN"
+# {"status":"success","internal_id":48086,"subject":"AW: Catch Up meeting...","content":"Hi Lucien,...","html":"<html>..."}
+```
+
+```bash
+# 仅获取摘要（前 500 字）
 curl -s -X POST https://mailagent.chenge.ink/api/command \
   -H "Content-Type: application/json" \
   -H "X-Webhook-Token: $TOKEN" \
   -d "{
     \"database_id\": \"$DB_ID\",
-    \"command\": \"query_mail\",
-    \"date_from\": \"2026-03-01\",
-    \"date_to\": \"2026-03-07\",
-    \"is_flagged\": true
+    \"command\": \"fetch_mail_content\",
+    \"internal_id\": 48086,
+    \"format\": \"summary\"
   }"
 ```
 
-### 示例 6: Fire-and-forget（不等待结果）
+### 示例 8: Fire-and-forget（不等待结果）
 
 ```bash
 # 只发送，不查询结果
