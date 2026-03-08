@@ -4,30 +4,61 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>MailAgent Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700;800&family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
     :root {
-      --bg: #0f172a;
-      --card: #1e293b;
-      --card-border: #334155;
-      --text: #e2e8f0;
-      --muted: #64748b;
-      --blue: #3b82f6;
-      --green: #22c55e;
-      --yellow: #eab308;
-      --red: #ef4444;
-      --orange: #f97316;
-      --radius: 10px;
-      --shadow: 0 4px 16px rgba(0,0,0,0.4);
+      --bg:         #080c14;
+      --bg-raised:  #0d1320;
+      --card:       rgba(14, 22, 38, 0.85);
+      --card-solid: #0e1626;
+      --card-hover: rgba(18, 28, 48, 0.9);
+      --border:     rgba(56, 97, 164, 0.15);
+      --border-hi:  rgba(56, 97, 164, 0.35);
+      --text:       #d8e3f0;
+      --text-hi:    #f0f6ff;
+      --muted:      #4a6080;
+      --dim:        #2a3a52;
+      --blue:       #4c9aff;
+      --blue-glow:  rgba(76, 154, 255, 0.15);
+      --green:      #34d399;
+      --green-glow: rgba(52, 211, 153, 0.12);
+      --yellow:     #fbbf24;
+      --yellow-glow:rgba(251, 191, 36, 0.10);
+      --red:        #f87171;
+      --red-glow:   rgba(248, 113, 113, 0.12);
+      --orange:     #fb923c;
+      --purple:     #a78bfa;
+      --cyan:       #22d3ee;
+      --mono:       'JetBrains Mono', 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+      --sans:       'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      --radius:     12px;
+      --radius-sm:  8px;
     }
 
     body {
       background: var(--bg);
       color: var(--text);
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      font-family: var(--sans);
       font-size: 14px;
       min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* ── Atmospheric background ── */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background:
+        repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(76,154,255,0.015) 2px, rgba(76,154,255,0.015) 4px),
+        radial-gradient(ellipse 80% 60% at 50% 0%, rgba(76,154,255,0.06) 0%, transparent 60%),
+        radial-gradient(ellipse 60% 50% at 80% 100%, rgba(52,211,153,0.03) 0%, transparent 50%);
+      pointer-events: none;
+      z-index: 0;
     }
 
     /* ── Header ── */
@@ -35,127 +66,219 @@
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 14px 24px;
-      background: var(--card);
-      border-bottom: 1px solid var(--card-border);
+      padding: 0 28px;
+      height: 56px;
+      background: rgba(8, 12, 20, 0.92);
+      backdrop-filter: blur(20px) saturate(1.2);
+      -webkit-backdrop-filter: blur(20px) saturate(1.2);
+      border-bottom: 1px solid var(--border);
       position: sticky;
       top: 0;
       z-index: 100;
-      gap: 12px;
+      gap: 16px;
     }
     .header-left {
       display: flex;
       align-items: center;
-      gap: 12px;
+      gap: 14px;
+    }
+    .header-logo {
+      width: 28px;
+      height: 28px;
+      border-radius: 7px;
+      background: linear-gradient(135deg, var(--blue) 0%, #7c3aed 100%);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 14px;
+      font-weight: 800;
+      color: #fff;
+      font-family: var(--mono);
+      letter-spacing: -1px;
+      box-shadow: 0 2px 12px rgba(76,154,255,0.3);
     }
     .header-title {
-      font-size: 18px;
+      font-size: 15px;
       font-weight: 700;
-      color: var(--text);
-      letter-spacing: 0.3px;
+      color: var(--text-hi);
+      letter-spacing: 0.5px;
+      font-family: var(--mono);
     }
     .header-badge {
-      font-size: 11px;
-      background: #3b82f620;
-      color: var(--blue);
-      border: 1px solid #3b82f640;
-      border-radius: 20px;
-      padding: 2px 9px;
+      font-size: 10px;
+      font-family: var(--mono);
       font-weight: 600;
+      background: rgba(76,154,255,0.1);
+      color: var(--blue);
+      border: 1px solid rgba(76,154,255,0.2);
+      border-radius: 20px;
+      padding: 3px 10px;
+      letter-spacing: 0.5px;
     }
     .header-right {
       display: flex;
       align-items: center;
-      gap: 16px;
+      gap: 18px;
       flex-shrink: 0;
     }
     .header-update {
       color: var(--muted);
-      font-size: 12px;
+      font-size: 11px;
+      font-family: var(--mono);
+      display: flex;
+      align-items: center;
+      gap: 6px;
     }
     .header-update span { color: var(--text); }
     .logout-link {
       color: var(--muted);
       text-decoration: none;
-      font-size: 12px;
-      padding: 4px 12px;
-      border: 1px solid var(--card-border);
+      font-size: 11px;
+      font-family: var(--mono);
+      padding: 5px 14px;
+      border: 1px solid var(--border);
       border-radius: 6px;
-      transition: color 0.2s, border-color 0.2s;
+      transition: all 0.25s ease;
+      letter-spacing: 0.3px;
     }
-    .logout-link:hover { color: var(--text); border-color: var(--muted); }
+    .logout-link:hover {
+      color: var(--text);
+      border-color: var(--border-hi);
+      background: rgba(76,154,255,0.05);
+    }
+
+    /* ── Refresh pulse ── */
+    .refresh-pulse {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--green);
+      box-shadow: 0 0 8px var(--green);
+      animation: pulse 2.5s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; box-shadow: 0 0 8px var(--green); }
+      50% { opacity: 0.25; box-shadow: 0 0 2px var(--green); }
+    }
 
     /* ── Layout ── */
     .main {
-      padding: 20px 24px 40px;
-      max-width: 1400px;
+      position: relative;
+      z-index: 1;
+      padding: 24px 28px 48px;
+      max-width: 1440px;
       margin: 0 auto;
       display: flex;
       flex-direction: column;
       gap: 18px;
     }
 
-    /* ── Card base ── */
+    /* ── Cards ── */
     .card {
       background: var(--card);
-      border: 1px solid var(--card-border);
+      border: 1px solid var(--border);
       border-radius: var(--radius);
-      box-shadow: var(--shadow);
-      padding: 16px 20px;
-      transition: border-color 0.3s;
+      padding: 20px 22px;
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      transition: border-color 0.3s ease, box-shadow 0.3s ease;
+    }
+    .card:hover {
+      border-color: var(--border-hi);
+      box-shadow: 0 4px 32px rgba(0,0,0,0.3);
     }
     .card-title {
-      font-size: 12px;
-      font-weight: 600;
+      font-size: 10px;
+      font-weight: 700;
+      font-family: var(--mono);
       text-transform: uppercase;
-      letter-spacing: 0.8px;
+      letter-spacing: 1.5px;
       color: var(--muted);
-      margin-bottom: 14px;
+      margin-bottom: 16px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .card-title::before {
+      content: '';
+      width: 3px;
+      height: 12px;
+      border-radius: 2px;
+      background: var(--blue);
     }
 
-    /* ── Section: Service status row ── */
+    /* ── Entry animation ── */
+    .anim-in {
+      opacity: 0;
+      transform: translateY(16px);
+      animation: slideIn 0.5s ease forwards;
+    }
+    @keyframes slideIn {
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* ── Service status row ── */
     .service-row {
       display: flex;
-      gap: 12px;
+      gap: 10px;
       flex-wrap: wrap;
     }
     .service-chip {
       background: var(--card);
-      border: 1px solid var(--card-border);
-      border-radius: 8px;
-      padding: 10px 16px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 12px 16px;
       display: flex;
       align-items: center;
-      gap: 8px;
+      gap: 10px;
       flex: 1;
-      min-width: 160px;
-      box-shadow: var(--shadow);
+      min-width: 155px;
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      transition: border-color 0.3s, background 0.3s;
+    }
+    .service-chip:hover {
+      border-color: var(--border-hi);
+      background: var(--card-hover);
     }
     .service-chip-label {
       color: var(--muted);
-      font-size: 11px;
+      font-size: 10px;
       font-weight: 600;
+      font-family: var(--mono);
       text-transform: uppercase;
-      letter-spacing: 0.6px;
+      letter-spacing: 0.8px;
       white-space: nowrap;
     }
     .service-chip-value {
-      color: var(--text);
+      color: var(--text-hi);
       font-size: 13px;
-      font-weight: 600;
-      font-family: 'SF Mono', 'Fira Code', monospace;
+      font-weight: 700;
+      font-family: var(--mono);
       margin-left: auto;
     }
     .status-dot {
-      width: 9px;
-      height: 9px;
+      width: 10px;
+      height: 10px;
       border-radius: 50%;
       flex-shrink: 0;
+      transition: all 0.4s;
     }
-    .dot-green { background: var(--green); box-shadow: 0 0 6px var(--green); }
-    .dot-red   { background: var(--red);   box-shadow: 0 0 6px var(--red); }
+    .dot-green {
+      background: var(--green);
+      box-shadow: 0 0 10px var(--green), 0 0 30px rgba(52,211,153,0.2);
+    }
+    .dot-red {
+      background: var(--red);
+      box-shadow: 0 0 10px var(--red), 0 0 30px rgba(248,113,113,0.2);
+      animation: dotPulse 1.5s ease infinite;
+    }
+    @keyframes dotPulse {
+      0%, 100% { box-shadow: 0 0 10px var(--red), 0 0 30px rgba(248,113,113,0.2); }
+      50% { box-shadow: 0 0 16px var(--red), 0 0 50px rgba(248,113,113,0.35); }
+    }
 
-    /* ── Section: Sync overview ── */
+    /* ── Metric cards ── */
     .metrics-row {
       display: grid;
       grid-template-columns: repeat(4, 1fr);
@@ -163,125 +286,167 @@
     }
     .metric-card {
       background: var(--card);
-      border: 1px solid var(--card-border);
+      border: 1px solid var(--border);
       border-radius: var(--radius);
-      box-shadow: var(--shadow);
-      padding: 18px 20px;
+      padding: 20px 22px;
       position: relative;
       overflow: hidden;
-      transition: transform 0.2s;
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      transition: transform 0.25s ease, border-color 0.3s ease, box-shadow 0.3s ease;
     }
-    .metric-card:hover { transform: translateY(-2px); }
+    .metric-card:hover {
+      transform: translateY(-3px);
+      box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+    }
     .metric-card::before {
       content: '';
       position: absolute;
       top: 0; left: 0; right: 0;
       height: 3px;
-      border-radius: var(--radius) var(--radius) 0 0;
     }
-    .metric-card.blue::before  { background: var(--blue); }
-    .metric-card.green::before { background: var(--green); }
-    .metric-card.yellow::before{ background: var(--yellow); }
-    .metric-card.red::before   { background: var(--red); }
+    .metric-card::after {
+      content: '';
+      position: absolute;
+      top: 0; left: 0;
+      width: 100%;
+      height: 100%;
+      opacity: 0;
+      transition: opacity 0.3s;
+      pointer-events: none;
+    }
+    .metric-card:hover::after { opacity: 1; }
+
+    .metric-card.blue::before  { background: linear-gradient(90deg, var(--blue), var(--cyan)); }
+    .metric-card.green::before { background: linear-gradient(90deg, var(--green), #6ee7b7); }
+    .metric-card.yellow::before{ background: linear-gradient(90deg, var(--yellow), var(--orange)); }
+    .metric-card.red::before   { background: linear-gradient(90deg, var(--red), #fca5a5); }
+    .metric-card.blue::after   { background: radial-gradient(ellipse at top, var(--blue-glow), transparent 70%); }
+    .metric-card.green::after  { background: radial-gradient(ellipse at top, var(--green-glow), transparent 70%); }
+    .metric-card.yellow::after { background: radial-gradient(ellipse at top, var(--yellow-glow), transparent 70%); }
+    .metric-card.red::after    { background: radial-gradient(ellipse at top, var(--red-glow), transparent 70%); }
+
     .metric-label {
-      font-size: 11px;
-      font-weight: 600;
+      font-size: 10px;
+      font-weight: 700;
+      font-family: var(--mono);
       text-transform: uppercase;
-      letter-spacing: 0.7px;
+      letter-spacing: 1.2px;
       color: var(--muted);
-      margin-bottom: 8px;
+      margin-bottom: 10px;
     }
     .metric-value {
-      font-size: 36px;
-      font-weight: 700;
-      font-family: 'SF Mono', 'Fira Code', monospace;
+      font-size: 38px;
+      font-weight: 800;
+      font-family: var(--mono);
       line-height: 1;
+      letter-spacing: -1px;
     }
     .metric-card.blue  .metric-value { color: var(--blue); }
     .metric-card.green .metric-value { color: var(--green); }
-    .metric-card.yellow.metric-value { color: var(--yellow); }
+    .metric-card.yellow .metric-value { color: var(--yellow); }
     .metric-card.red   .metric-value { color: var(--red); }
     .metric-sub {
-      margin-top: 6px;
+      margin-top: 10px;
       font-size: 11px;
+      font-family: var(--mono);
       color: var(--muted);
+      letter-spacing: 0.2px;
     }
 
     .dead-letter-banner {
-      background: #ef444420;
-      border: 1px solid #ef444450;
-      border-radius: 8px;
-      padding: 10px 16px;
+      background: rgba(248, 113, 113, 0.08);
+      border: 1px solid rgba(248, 113, 113, 0.2);
+      border-radius: var(--radius-sm);
+      padding: 12px 18px;
       display: flex;
       align-items: center;
-      gap: 10px;
+      gap: 12px;
       color: var(--red);
       font-size: 13px;
       font-weight: 600;
+      font-family: var(--mono);
+      animation: bannerPulse 3s ease infinite;
+    }
+    @keyframes bannerPulse {
+      0%, 100% { border-color: rgba(248,113,113,0.2); }
+      50% { border-color: rgba(248,113,113,0.45); }
     }
     .dead-letter-banner.hidden { display: none; }
-    .banner-icon { font-size: 16px; }
+    .banner-icon { font-size: 18px; }
 
-    /* ── Section: Charts ── */
+    /* ── Charts ── */
     .charts-row {
       display: grid;
       grid-template-columns: 1fr 1fr;
       gap: 14px;
     }
-    .bar-list { display: flex; flex-direction: column; gap: 10px; }
-    .bar-item { display: flex; flex-direction: column; gap: 4px; }
+    .bar-list { display: flex; flex-direction: column; gap: 12px; }
+    .bar-item { display: flex; flex-direction: column; gap: 5px; }
     .bar-header {
       display: flex;
       justify-content: space-between;
       font-size: 12px;
     }
-    .bar-name { color: var(--text); font-weight: 500; }
-    .bar-count { color: var(--muted); font-family: 'SF Mono', 'Fira Code', monospace; }
+    .bar-name { color: var(--text); font-weight: 600; font-family: var(--sans); }
+    .bar-count { color: var(--muted); font-family: var(--mono); font-weight: 600; font-size: 12px; }
     .bar-track {
-      height: 8px;
-      background: #ffffff10;
-      border-radius: 4px;
+      height: 10px;
+      background: rgba(255,255,255,0.04);
+      border-radius: 5px;
       overflow: hidden;
     }
     .bar-fill {
       height: 100%;
-      border-radius: 4px;
-      transition: width 0.5s ease;
+      border-radius: 5px;
+      transition: width 0.6s cubic-bezier(0.22, 1, 0.36, 1);
+      position: relative;
+    }
+    .bar-fill::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.15) 100%);
+      border-radius: 5px;
     }
 
-    .stacked-bar { display: flex; flex-direction: column; gap: 10px; }
+    .stacked-bar { display: flex; flex-direction: column; gap: 14px; }
     .stacked-track {
-      height: 24px;
-      background: #ffffff10;
-      border-radius: 6px;
+      height: 28px;
+      background: rgba(255,255,255,0.04);
+      border-radius: 8px;
       overflow: hidden;
       display: flex;
     }
     .stacked-segment {
       height: 100%;
-      transition: width 0.5s ease;
+      transition: width 0.6s cubic-bezier(0.22, 1, 0.36, 1);
       position: relative;
     }
+    .stacked-segment:first-child { border-radius: 8px 0 0 8px; }
+    .stacked-segment:last-child  { border-radius: 0 8px 8px 0; }
+    .stacked-segment:only-child  { border-radius: 8px; }
     .stacked-legend {
       display: flex;
       flex-wrap: wrap;
-      gap: 10px;
+      gap: 12px;
     }
     .legend-item {
       display: flex;
       align-items: center;
-      gap: 5px;
-      font-size: 12px;
+      gap: 6px;
+      font-size: 11px;
+      font-family: var(--mono);
       color: var(--muted);
     }
     .legend-dot {
       width: 8px;
       height: 8px;
-      border-radius: 50%;
+      border-radius: 3px;
       flex-shrink: 0;
     }
 
-    /* ── Section: Reverse + Events ── */
+    /* ── Two-column cards ── */
     .two-col {
       display: grid;
       grid-template-columns: 1fr 1fr;
@@ -290,44 +455,72 @@
     .stat-grid {
       display: grid;
       grid-template-columns: 1fr 1fr;
-      gap: 10px;
+      gap: 14px;
     }
-    .stat-item { display: flex; flex-direction: column; gap: 3px; }
-    .stat-label { font-size: 11px; color: var(--muted); }
+    .stat-item {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      padding: 12px 14px;
+      background: rgba(255,255,255,0.02);
+      border-radius: var(--radius-sm);
+      border: 1px solid rgba(255,255,255,0.03);
+      transition: background 0.2s;
+    }
+    .stat-item:hover { background: rgba(255,255,255,0.04); }
+    .stat-label {
+      font-size: 10px;
+      font-family: var(--mono);
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      color: var(--muted);
+    }
     .stat-value {
-      font-size: 20px;
-      font-weight: 700;
-      font-family: 'SF Mono', 'Fira Code', monospace;
-      color: var(--text);
+      font-size: 22px;
+      font-weight: 800;
+      font-family: var(--mono);
+      color: var(--text-hi);
     }
     .stat-value.sm {
-      font-size: 14px;
-    }
-    .handler-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 8px 16px;
-    }
-    .handler-item {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      padding: 6px 0;
-      border-bottom: 1px solid #ffffff08;
-    }
-    .handler-label { color: var(--muted); font-size: 12px; }
-    .handler-value {
-      font-family: 'SF Mono', 'Fira Code', monospace;
       font-size: 13px;
       font-weight: 600;
       color: var(--text);
     }
 
-    /* ── Section: Redis ── */
+    /* Handler grid */
+    .handler-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 4px 14px;
+    }
+    .handler-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 9px 12px;
+      border-radius: 6px;
+      transition: background 0.2s;
+    }
+    .handler-item:hover { background: rgba(255,255,255,0.03); }
+    .handler-label {
+      color: var(--muted);
+      font-size: 11px;
+      font-family: var(--mono);
+      letter-spacing: 0.2px;
+    }
+    .handler-value {
+      font-family: var(--mono);
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--text-hi);
+    }
+
+    /* ── Redis ── */
     .redis-layout {
       display: grid;
       grid-template-columns: 1fr auto;
-      gap: 20px;
+      gap: 22px;
       align-items: start;
     }
     .queue-list { display: flex; flex-direction: column; gap: 6px; }
@@ -335,13 +528,16 @@
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 8px 12px;
-      background: #ffffff05;
-      border-radius: 6px;
-      gap: 12px;
+      padding: 10px 14px;
+      background: rgba(255,255,255,0.02);
+      border-radius: var(--radius-sm);
+      gap: 14px;
+      border: 1px solid rgba(255,255,255,0.03);
+      transition: background 0.2s, border-color 0.2s;
     }
+    .queue-item:hover { background: rgba(255,255,255,0.04); border-color: var(--border); }
     .queue-name {
-      font-family: 'SF Mono', 'Fira Code', monospace;
+      font-family: var(--mono);
       font-size: 11px;
       color: var(--muted);
       overflow: hidden;
@@ -349,40 +545,57 @@
       white-space: nowrap;
     }
     .queue-pending {
-      font-family: 'SF Mono', 'Fira Code', monospace;
-      font-size: 13px;
+      font-family: var(--mono);
+      font-size: 12px;
       font-weight: 700;
-      padding: 2px 8px;
-      border-radius: 4px;
+      padding: 3px 10px;
+      border-radius: 5px;
       white-space: nowrap;
+      letter-spacing: 0.3px;
     }
-    .queue-pending.zero  { color: var(--green); background: #22c55e15; }
-    .queue-pending.nonzero { color: var(--yellow); background: #eab30815; }
+    .queue-pending.zero {
+      color: var(--green);
+      background: rgba(52,211,153,0.08);
+      border: 1px solid rgba(52,211,153,0.15);
+    }
+    .queue-pending.nonzero {
+      color: var(--yellow);
+      background: rgba(251,191,36,0.08);
+      border: 1px solid rgba(251,191,36,0.15);
+    }
     .consumer-stats {
       display: flex;
       flex-direction: column;
       gap: 8px;
-      min-width: 140px;
+      min-width: 145px;
     }
     .consumer-stat {
       display: flex;
       flex-direction: column;
-      gap: 2px;
-      padding: 8px 12px;
-      background: #ffffff05;
-      border-radius: 6px;
+      gap: 3px;
+      padding: 10px 14px;
+      background: rgba(255,255,255,0.02);
+      border-radius: var(--radius-sm);
+      border: 1px solid rgba(255,255,255,0.03);
     }
-    .consumer-label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+    .consumer-label {
+      font-size: 9px;
+      font-family: var(--mono);
+      font-weight: 600;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
     .consumer-value {
-      font-size: 18px;
-      font-weight: 700;
-      font-family: 'SF Mono', 'Fira Code', monospace;
-      color: var(--text);
+      font-size: 20px;
+      font-weight: 800;
+      font-family: var(--mono);
+      color: var(--text-hi);
     }
 
-    /* ── Section: Alerts ── */
+    /* ── Alerts ── */
     .alerts-list {
-      max-height: 300px;
+      max-height: 320px;
       overflow-y: auto;
       display: flex;
       flex-direction: column;
@@ -390,102 +603,108 @@
     }
     .alerts-list::-webkit-scrollbar { width: 4px; }
     .alerts-list::-webkit-scrollbar-track { background: transparent; }
-    .alerts-list::-webkit-scrollbar-thumb { background: var(--card-border); border-radius: 2px; }
+    .alerts-list::-webkit-scrollbar-thumb { background: var(--dim); border-radius: 2px; }
     .alert-item {
       display: flex;
       align-items: flex-start;
       gap: 10px;
-      padding: 10px 12px;
-      background: #ffffff04;
-      border-radius: 6px;
+      padding: 11px 14px;
+      background: rgba(255,255,255,0.015);
+      border-radius: var(--radius-sm);
       border-left: 3px solid transparent;
+      transition: background 0.2s;
     }
-    .alert-item.error  { border-left-color: var(--red);    background: #ef444408; }
-    .alert-item.warning{ border-left-color: var(--yellow); background: #eab30808; }
-    .alert-item.info   { border-left-color: var(--blue);   background: #3b82f608; }
+    .alert-item:hover { background: rgba(255,255,255,0.035); }
+    .alert-item.error   { border-left-color: var(--red);    background: rgba(248,113,113,0.04); }
+    .alert-item.warning { border-left-color: var(--yellow); background: rgba(251,191,36,0.03); }
+    .alert-item.info    { border-left-color: var(--blue);   background: rgba(76,154,255,0.03); }
     .alert-ts {
-      font-size: 11px;
-      color: var(--muted);
-      font-family: 'SF Mono', 'Fira Code', monospace;
+      font-size: 10px;
+      color: var(--dim);
+      font-family: var(--mono);
       white-space: nowrap;
       flex-shrink: 0;
-      padding-top: 1px;
+      padding-top: 2px;
     }
     .alert-badge {
-      font-size: 10px;
+      font-size: 9px;
       font-weight: 700;
-      padding: 2px 6px;
+      font-family: var(--mono);
+      padding: 2px 7px;
       border-radius: 4px;
       text-transform: uppercase;
       flex-shrink: 0;
+      letter-spacing: 0.5px;
     }
-    .alert-badge.error   { background: #ef444420; color: var(--red); }
-    .alert-badge.warning { background: #eab30820; color: var(--yellow); }
-    .alert-badge.info    { background: #3b82f620; color: var(--blue); }
+    .alert-badge.error   { background: rgba(248,113,113,0.12); color: var(--red); }
+    .alert-badge.warning { background: rgba(251,191,36,0.12);  color: var(--yellow); }
+    .alert-badge.info    { background: rgba(76,154,255,0.12);  color: var(--blue); }
     .alert-source {
-      font-size: 11px;
-      color: var(--muted);
+      font-size: 10px;
+      font-family: var(--mono);
+      color: var(--dim);
       flex-shrink: 0;
-      padding-top: 1px;
+      padding-top: 2px;
     }
     .alert-msg {
       font-size: 12px;
       color: var(--text);
       flex: 1;
       word-break: break-word;
+      line-height: 1.5;
     }
+
+    /* ── Empty & error states ── */
     .empty-state {
       text-align: center;
-      padding: 32px 0;
-      color: var(--muted);
-      font-size: 13px;
+      padding: 36px 0;
+      color: var(--dim);
+      font-size: 12px;
+      font-family: var(--mono);
+      letter-spacing: 0.3px;
     }
-    .empty-icon { font-size: 28px; margin-bottom: 8px; }
+    .empty-icon { font-size: 28px; margin-bottom: 10px; opacity: 0.6; }
 
-    /* ── Refresh indicator ── */
-    .refresh-pulse {
-      display: inline-block;
-      width: 6px;
-      height: 6px;
-      border-radius: 50%;
-      background: var(--green);
-      margin-right: 4px;
-      animation: pulse 2s infinite;
-    }
-    @keyframes pulse {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.3; }
-    }
-
-    /* ── Error banner ── */
     .fetch-error {
-      background: #ef444415;
-      border: 1px solid #ef444430;
-      border-radius: 8px;
-      padding: 10px 16px;
+      background: rgba(248,113,113,0.06);
+      border: 1px solid rgba(248,113,113,0.15);
+      border-radius: var(--radius-sm);
+      padding: 12px 18px;
       color: var(--red);
       font-size: 12px;
+      font-family: var(--mono);
       display: none;
       align-items: center;
-      gap: 8px;
+      gap: 10px;
     }
     .fetch-error.show { display: flex; }
 
+    /* ── Footer ── */
+    .footer {
+      text-align: center;
+      padding: 12px 0 24px;
+      font-size: 10px;
+      font-family: var(--mono);
+      color: var(--dim);
+      letter-spacing: 0.5px;
+    }
+
     /* ── Responsive ── */
-    @media (max-width: 900px) {
-      .main { padding: 14px 14px 30px; gap: 14px; }
+    @media (max-width: 960px) {
+      .main { padding: 16px 16px 36px; gap: 14px; }
       .metrics-row { grid-template-columns: repeat(2, 1fr); }
       .charts-row  { grid-template-columns: 1fr; }
       .two-col     { grid-template-columns: 1fr; }
       .header-badge { display: none; }
     }
     @media (max-width: 600px) {
+      .header { padding: 0 16px; height: 50px; }
       .metrics-row { grid-template-columns: 1fr 1fr; }
       .service-row { gap: 8px; }
-      .service-chip { min-width: 130px; }
+      .service-chip { min-width: 130px; padding: 10px 12px; }
       .metric-value { font-size: 28px; }
       .redis-layout { grid-template-columns: 1fr; }
-      .header { padding: 12px 14px; }
+      .stat-grid { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -494,15 +713,16 @@
 <!-- ── Header ── -->
 <header class="header">
   <div class="header-left">
-    <span class="header-title">MailAgent Dashboard</span>
-    <span class="header-badge">v3 SQLite</span>
+    <div class="header-logo">M</div>
+    <span class="header-title">MailAgent</span>
+    <span class="header-badge">v3 SQLite-First</span>
   </div>
   <div class="header-right">
     <div class="header-update">
-      <span class="refresh-pulse"></span>
-      上次更新：<span id="last-update">--</span>
+      <div class="refresh-pulse"></div>
+      <span id="last-update">--:--:--</span>
     </div>
-    <a href="/dashboard/logout" class="logout-link">退出</a>
+    <a href="/dashboard/logout" class="logout-link">logout</a>
   </div>
 </header>
 
@@ -510,19 +730,19 @@
 
   <!-- Fetch error -->
   <div class="fetch-error" id="fetch-error">
-    <span>⚠</span>
-    <span id="fetch-error-msg">无法获取数据</span>
+    <span>&#x26A0;</span>
+    <span id="fetch-error-msg">Unable to fetch data</span>
   </div>
 
-  <!-- 1. Service status row -->
-  <div class="service-row" id="service-row">
+  <!-- 1. Service status -->
+  <div class="service-row anim-in" style="animation-delay:0.05s">
     <div class="service-chip">
       <div class="status-dot dot-red" id="status-dot"></div>
-      <span class="service-chip-label">状态</span>
+      <span class="service-chip-label">Status</span>
       <span class="service-chip-value" id="svc-status">离线</span>
     </div>
     <div class="service-chip">
-      <span class="service-chip-label">运行时长</span>
+      <span class="service-chip-label">Uptime</span>
       <span class="service-chip-value" id="svc-uptime">--</span>
     </div>
     <div class="service-chip">
@@ -530,7 +750,7 @@
       <span class="service-chip-value" id="svc-python">--</span>
     </div>
     <div class="service-chip">
-      <span class="service-chip-label">最近心跳</span>
+      <span class="service-chip-label">Heartbeat</span>
       <span class="service-chip-value" id="svc-heartbeat">--</span>
     </div>
     <div class="service-chip">
@@ -538,89 +758,89 @@
       <span class="service-chip-value" id="svc-watcher">--</span>
     </div>
     <div class="service-chip">
-      <span class="service-chip-label">Redis Consumer</span>
+      <span class="service-chip-label">Redis</span>
       <span class="service-chip-value" id="svc-redis">--</span>
     </div>
   </div>
 
   <!-- 2. Sync overview -->
-  <div>
+  <div class="anim-in" style="animation-delay:0.12s">
     <div class="metrics-row">
       <div class="metric-card blue">
-        <div class="metric-label">总邮件</div>
+        <div class="metric-label">Total</div>
         <div class="metric-value" id="m-total">--</div>
-        <div class="metric-sub" id="m-polls">轮询: --</div>
+        <div class="metric-sub" id="m-polls">polls: --</div>
       </div>
       <div class="metric-card green">
-        <div class="metric-label">已同步</div>
+        <div class="metric-label">Synced</div>
         <div class="metric-value" id="m-synced">--</div>
-        <div class="metric-sub" id="m-detected">检测到: --</div>
+        <div class="metric-sub" id="m-detected">detected: --</div>
       </div>
       <div class="metric-card yellow">
-        <div class="metric-label">待处理</div>
+        <div class="metric-label">Pending</div>
         <div class="metric-value" id="m-pending" style="color:var(--yellow)">--</div>
-        <div class="metric-sub" id="m-skipped">跳过: --</div>
+        <div class="metric-sub" id="m-skipped">skipped: --</div>
       </div>
       <div class="metric-card red">
-        <div class="metric-label">失败</div>
+        <div class="metric-label">Failed</div>
         <div class="metric-value" id="m-failed" style="color:var(--red)">--</div>
-        <div class="metric-sub" id="m-errors">同步错误: --</div>
+        <div class="metric-sub" id="m-errors">errors: --</div>
       </div>
     </div>
-    <div style="margin-top:10px">
+    <div style="margin-top:12px">
       <div class="dead-letter-banner hidden" id="dead-letter-banner">
-        <span class="banner-icon">☠</span>
-        <span id="dead-letter-text">Dead Letter 队列: 0 封邮件需人工处理</span>
+        <span class="banner-icon">&#x2620;</span>
+        <span id="dead-letter-text">Dead Letter: 0 emails require manual intervention</span>
       </div>
     </div>
   </div>
 
   <!-- 3. Charts -->
-  <div class="charts-row">
+  <div class="charts-row anim-in" style="animation-delay:0.19s">
     <div class="card">
-      <div class="card-title">邮箱分布</div>
+      <div class="card-title">Mailbox Distribution</div>
       <div class="bar-list" id="mailbox-bars">
-        <div class="empty-state"><div class="empty-icon">📭</div>暂无数据</div>
+        <div class="empty-state"><div class="empty-icon">&#x1F4ED;</div>No data</div>
       </div>
     </div>
     <div class="card">
-      <div class="card-title">状态分布</div>
+      <div class="card-title">Status Breakdown</div>
       <div class="stacked-bar" id="status-bar">
         <div class="stacked-track" id="status-track">
-          <div style="width:100%;background:#ffffff10;height:100%"></div>
+          <div style="width:100%;background:rgba(255,255,255,0.04);height:100%"></div>
         </div>
         <div class="stacked-legend" id="status-legend">
-          <div class="empty-state" style="width:100%">暂无数据</div>
+          <div class="empty-state" style="width:100%">No data</div>
         </div>
       </div>
     </div>
   </div>
 
   <!-- 4. Reverse sync + Events -->
-  <div class="two-col">
+  <div class="two-col anim-in" style="animation-delay:0.26s">
     <div class="card">
-      <div class="card-title">反向同步</div>
+      <div class="card-title">Reverse Sync</div>
       <div class="stat-grid">
         <div class="stat-item">
-          <div class="stat-label">已同步到 Mail</div>
+          <div class="stat-label">Synced to Mail</div>
           <div class="stat-value" id="rev-synced">--</div>
         </div>
         <div class="stat-item">
-          <div class="stat-label">飞书已通知</div>
+          <div class="stat-label">Feishu Notified</div>
           <div class="stat-value" id="rev-notified">--</div>
         </div>
         <div class="stat-item">
-          <div class="stat-label">错误次数</div>
+          <div class="stat-label">Errors</div>
           <div class="stat-value" id="rev-errors" style="color:var(--red)">--</div>
         </div>
         <div class="stat-item">
-          <div class="stat-label">最后检查</div>
+          <div class="stat-label">Last Check</div>
           <div class="stat-value sm" id="rev-last">--</div>
         </div>
       </div>
     </div>
     <div class="card">
-      <div class="card-title">事件处理</div>
+      <div class="card-title">Event Handlers</div>
       <div class="handler-grid">
         <div class="handler-item">
           <span class="handler-label">flag_changed</span>
@@ -639,19 +859,19 @@
           <span class="handler-value" id="h-query">--</span>
         </div>
         <div class="handler-item">
-          <span class="handler-label">create_draft ✓</span>
+          <span class="handler-label">draft &#x2713;</span>
           <span class="handler-value" style="color:var(--green)" id="h-draft-ok">--</span>
         </div>
         <div class="handler-item">
-          <span class="handler-label">create_draft ✗</span>
+          <span class="handler-label">draft &#x2717;</span>
           <span class="handler-value" style="color:var(--red)" id="h-draft-err">--</span>
         </div>
         <div class="handler-item">
-          <span class="handler-label">feishu_notified</span>
-          <span class="handler-value" style="color:var(--blue)" id="h-feishu">--</span>
+          <span class="handler-label">feishu</span>
+          <span class="handler-value" style="color:var(--cyan)" id="h-feishu">--</span>
         </div>
         <div class="handler-item">
-          <span class="handler-label">create_draft 总</span>
+          <span class="handler-label">draft total</span>
           <span class="handler-value" id="h-draft-total">--</span>
         </div>
       </div>
@@ -659,25 +879,25 @@
   </div>
 
   <!-- 5. Redis -->
-  <div class="card">
-    <div class="card-title">Redis 队列 &amp; 消费者</div>
+  <div class="card anim-in" style="animation-delay:0.33s">
+    <div class="card-title">Redis Queues &amp; Consumer</div>
     <div class="redis-layout">
       <div>
         <div class="queue-list" id="queue-list">
-          <div class="empty-state">暂无队列数据</div>
+          <div class="empty-state">No queue data</div>
         </div>
       </div>
       <div class="consumer-stats">
         <div class="consumer-stat">
-          <div class="consumer-label">已接收</div>
+          <div class="consumer-label">Received</div>
           <div class="consumer-value" id="rc-received">--</div>
         </div>
         <div class="consumer-stat">
-          <div class="consumer-label">已处理</div>
+          <div class="consumer-label">Processed</div>
           <div class="consumer-value" style="color:var(--green)" id="rc-processed">--</div>
         </div>
         <div class="consumer-stat">
-          <div class="consumer-label">错误</div>
+          <div class="consumer-label">Errors</div>
           <div class="consumer-value" style="color:var(--red)" id="rc-errors">--</div>
         </div>
       </div>
@@ -685,26 +905,29 @@
   </div>
 
   <!-- 6. Alerts -->
-  <div class="card">
-    <div class="card-title">告警记录</div>
+  <div class="card anim-in" style="animation-delay:0.40s">
+    <div class="card-title">Alerts</div>
     <div class="alerts-list" id="alerts-list">
       <div class="empty-state">
-        <div class="empty-icon">✅</div>
-        暂无告警
+        <div class="empty-icon">&#x2705;</div>
+        No alerts
       </div>
     </div>
   </div>
 
 </main>
 
+<div class="footer">MAILAGENT MONITORING &middot; SQLITE-FIRST ARCHITECTURE</div>
+
 <script>
   // ── Utilities ──────────────────────────────────────────────────
   const $ = id => document.getElementById(id);
-  const fmt = n => (n == null || n === undefined || n === '') ? '--' : Number(n).toLocaleString('zh-CN');
+  const fmt = n => (n == null || n === undefined || n === '') ? '--' : Number(n).toLocaleString('en-US');
   const fmtSafe = n => (n == null) ? '--' : fmt(n);
 
   function fmtUptime(secs) {
     if (!secs && secs !== 0) return '--';
+    secs = Number(secs);
     const d = Math.floor(secs / 86400);
     const h = Math.floor((secs % 86400) / 3600);
     const m = Math.floor((secs % 3600) / 60);
@@ -718,11 +941,11 @@
   function relativeTime(ts) {
     if (!ts) return '--';
     const diff = Math.floor(Date.now() / 1000) - ts;
-    if (diff < 0) return '刚刚';
-    if (diff < 60) return diff + '秒前';
-    if (diff < 3600) return Math.floor(diff / 60) + '分钟前';
-    if (diff < 86400) return Math.floor(diff / 3600) + '小时前';
-    return Math.floor(diff / 86400) + '天前';
+    if (diff < 0) return 'just now';
+    if (diff < 60) return diff + 's ago';
+    if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+    if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+    return Math.floor(diff / 86400) + 'd ago';
   }
 
   function fmtDateTime(str) {
@@ -735,21 +958,21 @@
   }
 
   const STATUS_COLORS = {
-    synced:       '#22c55e',
-    fetched:      '#3b82f6',
-    pending:      '#eab308',
-    fetch_failed: '#f97316',
-    failed:       '#ef4444',
-    dead_letter:  '#dc2626',
-    skipped:      '#64748b',
+    synced:       '#34d399',
+    fetched:      '#4c9aff',
+    pending:      '#fbbf24',
+    fetch_failed: '#fb923c',
+    failed:       '#f87171',
+    dead_letter:  '#ef4444',
+    skipped:      '#4a6080',
+    deleted:      '#374151',
   };
   const STATUS_LABELS = {
-    synced: '已同步', fetched: '已获取', pending: '待处理',
-    fetch_failed: '获取失败', failed: '失败', dead_letter: 'Dead Letter', skipped: '已跳过',
+    synced: 'Synced', fetched: 'Fetched', pending: 'Pending',
+    fetch_failed: 'Fetch Failed', failed: 'Failed', dead_letter: 'Dead Letter',
+    skipped: 'Skipped', deleted: 'Deleted',
   };
-  const MAILBOX_COLORS = [
-    '#3b82f6','#8b5cf6','#06b6d4','#22c55e','#f97316','#ec4899','#14b8a6','#a855f7'
-  ];
+  const MAILBOX_COLORS = ['#4c9aff','#a78bfa','#22d3ee','#34d399','#fb923c','#ec4899','#14b8a6','#e879f9'];
 
   // ── Render functions ────────────────────────────────────────────
   function renderServiceRow(data, online, lastHeartbeat) {
@@ -761,6 +984,7 @@
     const dot = $('status-dot');
     dot.className = 'status-dot ' + (isOnline ? 'dot-green' : 'dot-red');
     $('svc-status').textContent = isOnline ? '在线' : '离线';
+    $('svc-status').style.color = isOnline ? 'var(--green)' : 'var(--red)';
     $('svc-uptime').textContent = fmtUptime(svc.uptime_seconds);
     $('svc-python').textContent = svc.python_version || '--';
     $('svc-heartbeat').textContent = relativeTime(lastHeartbeat);
@@ -775,18 +999,18 @@
     $('m-total').textContent     = fmtSafe(w.total_emails);
     $('m-synced').textContent    = fmtSafe(w.synced);
     $('m-pending').textContent   = fmtSafe(w.pending);
-    const failed = (w.failed || 0) + (w.fetch_failed || 0);
+    const failed = (Number(w.failed) || 0) + (Number(w.fetch_failed) || 0);
     $('m-failed').textContent    = failed === 0 && !w.failed && !w.fetch_failed ? '--' : fmt(failed);
-    $('m-polls').textContent     = '轮询: ' + fmtSafe(w.polls);
-    $('m-detected').textContent  = '检测到: ' + fmtSafe(w.new_emails_detected);
-    $('m-skipped').textContent   = '跳过: ' + fmtSafe(w.skipped);
-    $('m-errors').textContent    = '同步错误: ' + fmtSafe(w.errors);
+    $('m-polls').textContent     = 'polls: ' + fmtSafe(w.polls);
+    $('m-detected').textContent  = 'detected: ' + fmtSafe(w.new_emails_detected);
+    $('m-skipped').textContent   = 'skipped: ' + fmtSafe(w.skipped);
+    $('m-errors').textContent    = 'errors: ' + fmtSafe(w.errors);
 
-    const dl = w.dead_letter || 0;
+    const dl = Number(w.dead_letter) || 0;
     const banner = $('dead-letter-banner');
     if (dl > 0) {
       banner.classList.remove('hidden');
-      $('dead-letter-text').textContent = `Dead Letter 队列: ${fmt(dl)} 封邮件需人工处理`;
+      $('dead-letter-text').textContent = `Dead Letter: ${fmt(dl)} emails require manual intervention`;
     } else {
       banner.classList.add('hidden');
     }
@@ -795,7 +1019,7 @@
   function renderMailboxBars(byMailbox) {
     const container = $('mailbox-bars');
     if (!byMailbox || Object.keys(byMailbox).length === 0) {
-      container.innerHTML = '<div class="empty-state"><div class="empty-icon">📭</div>暂无数据</div>';
+      container.innerHTML = '<div class="empty-state"><div class="empty-icon">&#x1F4ED;</div>No data</div>';
       return;
     }
     const entries = Object.entries(byMailbox).sort((a, b) => b[1] - a[1]);
@@ -817,26 +1041,25 @@
     const track = $('status-track');
     const legend = $('status-legend');
     if (!byStatus || Object.keys(byStatus).length === 0) {
-      track.innerHTML = '<div style="width:100%;background:#ffffff10;height:100%"></div>';
-      legend.innerHTML = '<div class="empty-state" style="width:100%">暂无数据</div>';
+      track.innerHTML = '<div style="width:100%;background:rgba(255,255,255,0.04);height:100%"></div>';
+      legend.innerHTML = '<div class="empty-state" style="width:100%">No data</div>';
       return;
     }
     const total = Object.values(byStatus).reduce((a, b) => a + b, 0) || 1;
-    const order = ['synced','fetched','pending','fetch_failed','failed','dead_letter','skipped'];
+    const order = ['synced','fetched','pending','fetch_failed','failed','dead_letter','skipped','deleted'];
     const segments = order.filter(k => byStatus[k] > 0).map(k => ({
-      key: k, count: byStatus[k], pct: Math.max(1, Math.round(byStatus[k]/total*100))
+      key: k, count: byStatus[k], pct: Math.max(0.5, byStatus[k]/total*100)
     }));
-    // Add any unknown keys
     Object.entries(byStatus).forEach(([k, v]) => {
-      if (!order.includes(k) && v > 0) segments.push({ key: k, count: v, pct: Math.max(1, Math.round(v/total*100)) });
+      if (!order.includes(k) && v > 0) segments.push({ key: k, count: v, pct: Math.max(0.5, v/total*100) });
     });
 
     track.innerHTML = segments.map(s =>
-      `<div class="stacked-segment" style="width:${s.pct}%;background:${STATUS_COLORS[s.key] || '#94a3b8'}" title="${STATUS_LABELS[s.key]||s.key}: ${fmt(s.count)}"></div>`
+      `<div class="stacked-segment" style="width:${s.pct}%;background:${STATUS_COLORS[s.key] || '#4a6080'}" title="${STATUS_LABELS[s.key]||s.key}: ${fmt(s.count)}"></div>`
     ).join('');
 
     legend.innerHTML = segments.map(s =>
-      `<div class="legend-item"><div class="legend-dot" style="background:${STATUS_COLORS[s.key]||'#94a3b8'}"></div>${STATUS_LABELS[s.key]||s.key} <strong style="color:var(--text);margin-left:3px">${fmt(s.count)}</strong></div>`
+      `<div class="legend-item"><div class="legend-dot" style="background:${STATUS_COLORS[s.key]||'#4a6080'}"></div>${STATUS_LABELS[s.key]||s.key} <strong style="color:var(--text-hi);margin-left:2px">${fmt(s.count)}</strong></div>`
     ).join('');
   }
 
@@ -863,14 +1086,14 @@
   function renderQueues(queues, consumer) {
     const qList = $('queue-list');
     if (!queues || Object.keys(queues).length === 0) {
-      qList.innerHTML = '<div class="empty-state">暂无队列数据</div>';
+      qList.innerHTML = '<div class="empty-state">No queue data</div>';
     } else {
       qList.innerHTML = Object.values(queues).map(q => {
         const pending = q.pending ?? 0;
         return `
           <div class="queue-item">
             <span class="queue-name">${escHtml(q.queue || '--')}</span>
-            <span class="queue-pending ${pending === 0 ? 'zero' : 'nonzero'}">${pending === 0 ? '空' : fmt(pending) + ' 待处理'}</span>
+            <span class="queue-pending ${pending === 0 ? 'zero' : 'nonzero'}">${pending === 0 ? 'empty' : fmt(pending) + ' pending'}</span>
           </div>
         `;
       }).join('');
@@ -884,10 +1107,9 @@
   function renderAlerts(alerts) {
     const container = $('alerts-list');
     if (!alerts || alerts.length === 0) {
-      container.innerHTML = '<div class="empty-state"><div class="empty-icon">✅</div>暂无告警</div>';
+      container.innerHTML = '<div class="empty-state"><div class="empty-icon">&#x2705;</div>No alerts</div>';
       return;
     }
-    // Sort newest first
     const sorted = [...alerts].sort((a, b) => (b.ts || 0) - (a.ts || 0));
     container.innerHTML = sorted.map(a => {
       const lvl = a.level || 'info';
@@ -897,8 +1119,8 @@
       return `
         <div class="alert-item ${lvl}">
           <span class="alert-ts">${ts}</span>
-          <span class="alert-badge ${lvl}">${lvl === 'error' ? '错误' : lvl === 'warning' ? '警告' : '信息'}</span>
-          <span class="alert-source">[${escHtml(a.source || '?')}]</span>
+          <span class="alert-badge ${lvl}">${lvl === 'error' ? 'ERR' : lvl === 'warning' ? 'WARN' : 'INFO'}</span>
+          <span class="alert-source">${escHtml(a.source || '?')}</span>
           <span class="alert-msg">${escHtml(a.message || '')}</span>
         </div>
       `;
@@ -936,11 +1158,10 @@
       $('last-update').textContent = new Date().toLocaleTimeString('zh-CN');
     } catch (err) {
       $('fetch-error').classList.add('show');
-      $('fetch-error-msg').textContent = '数据获取失败：' + err.message;
+      $('fetch-error-msg').textContent = err.message;
     }
   }
 
-  // Initial render with placeholder
   fetchAndRender();
   setInterval(fetchAndRender, 10000);
 </script>
