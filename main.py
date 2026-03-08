@@ -82,7 +82,16 @@ class EmailNotionSyncApp:
                 token=config.stats_report_token,
                 interval=config.stats_report_interval,
             )
-            self.stats_reporter.add_collector("watcher", lambda: self.watcher.get_stats())
+            def _flat_watcher_stats():
+                stats = self.watcher.get_stats()
+                # Flatten sync_store into top level for dashboard
+                ss = stats.pop("sync_store", {})
+                stats.update(ss)
+                # Flatten radar into top level
+                radar = stats.pop("radar", {})
+                stats.update({f"radar_{k}": v for k, v in radar.items()})
+                return stats
+            self.stats_reporter.add_collector("watcher", _flat_watcher_stats)
             self.stats_reporter.add_collector("reverse", lambda: self.reverse_sync.get_stats())
             if self.redis_consumer:
                 self.stats_reporter.add_collector("redis_consumer", lambda: self.redis_consumer.get_stats())
