@@ -756,18 +756,16 @@ async def stats_report(request: Request):
     ts = body.get("timestamp", int(time.time()))
     key_prefix = f"{STATS_KEY_PREFIX}{database_id}"
 
-    # Store each section as a Redis hash (non-transactional pipeline for compatibility)
+    # Store each section as a Redis hash
     for section in ("service", "watcher", "reverse", "redis_consumer", "handlers"):
         data = body.get(section)
         if data and isinstance(data, dict):
-            # Flatten nested dicts to JSON strings
-            flat = {}
+            hash_key = f"{key_prefix}:{section}"
+            await redis_pool.delete(hash_key)
             for k, v in data.items():
-                flat[k] = json.dumps(v, ensure_ascii=False) if isinstance(v, (dict, list)) else str(v)
-            if flat:
-                await redis_pool.delete(f"{key_prefix}:{section}")
-                await redis_pool.hset(f"{key_prefix}:{section}", mapping=flat)
-                await redis_pool.expire(f"{key_prefix}:{section}", STATS_TTL)
+                val = json.dumps(v, ensure_ascii=False) if isinstance(v, (dict, list)) else str(v)
+                await redis_pool.hset(hash_key, k, val)
+            await redis_pool.expire(hash_key, STATS_TTL)
 
     # Store heartbeat
     await redis_pool.hset(f"{key_prefix}:service", "last_heartbeat", str(ts))
