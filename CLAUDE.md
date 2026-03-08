@@ -141,6 +141,7 @@ tail -f logs/sync.log
 | 模块 | 职责 |
 |------|------|
 | `feishu.py` | 飞书应用机器人通知（App Bot API + 交互式卡片按钮回调 Openclaw） |
+| `alert.py` | 飞书告警机器人（群聊 Webhook Bot，可配置级别/冷却/卡片样式） |
 
 #### 监控模块 (`src/`)
 
@@ -467,6 +468,26 @@ CREATE TABLE thread_head_cache (
 | `STATS_REPORT_URL` | `""` | 看板上报 URL（如 `https://mailagent.chenge.ink/api/stats/report`） |
 | `STATS_REPORT_INTERVAL` | `60` | 上报间隔（秒） |
 | `STATS_REPORT_TOKEN` | `""` | 上报认证 token |
+
+### 飞书告警机器人配置
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `ALERT_FEISHU_WEBHOOK_URL` | `""` | 飞书告警机器人 webhook URL |
+| `ALERT_FEISHU_WEBHOOK_SECRET` | `""` | webhook 签名密钥 |
+| `ALERT_ENABLED` | `false` | 是否启用飞书告警 |
+| `ALERT_LEVELS` | `critical,error,warning` | 启用的告警级别（逗号分隔） |
+| `ALERT_COOLDOWN` | `300` | 同类告警冷却时间（秒） |
+| `ALERT_DEAD_LETTER_THRESHOLD` | `5` | dead_letter 累积告警阈值 |
+
+**告警级别与卡片样式：**
+
+| 级别 | 颜色 | 触发场景 |
+|------|------|---------|
+| `critical` | 红色 | 服务崩溃、健康检查失败 |
+| `error` | 橙色 | 同步失败、API 错误、连续错误、Redis 断连 |
+| `warning` | 黄色 | dead_letter 累积、雷达不可用、服务停止 |
+| `info` | 蓝色 | 服务启动、恢复通知 |
 
 ### Webhook Server 看板配置
 

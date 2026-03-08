@@ -38,6 +38,18 @@ class EmailNotionSyncApp:
         # 事件处理器引用（用于 stats）
         self._event_handlers = None
 
+        # 飞书告警通知
+        self.alerter = None
+        if config.alert_enabled and config.alert_feishu_webhook_url:
+            from src.notify.alert import FeishuAlertNotifier
+            self.alerter = FeishuAlertNotifier(
+                webhook_url=config.alert_feishu_webhook_url,
+                secret=config.alert_feishu_webhook_secret,
+                enabled_levels=config.alert_levels,
+                cooldown=config.alert_cooldown,
+            )
+            logger.info(f"Alert notifier configured: levels={config.alert_levels} cooldown={config.alert_cooldown}s")
+
         # Redis 事件消费（P3: Notion webhook → Redis → Mail.app）
         self.redis_consumer = None
         if config.redis_events_enabled and config.redis_url:
@@ -110,6 +122,9 @@ class EmailNotionSyncApp:
             logger.add(_alert_sink, level="ERROR", format="{message}")
             logger.info(f"Stats reporter configured: url={config.stats_report_url} interval={config.stats_report_interval}s")
 
+            if self.alerter:
+                self.stats_reporter.add_collector("alerts", lambda: self.alerter.get_stats())
+
         self._shutdown_event = asyncio.Event()
 
     def _handle_signal(self, signum, frame):
@@ -133,6 +148,11 @@ class EmailNotionSyncApp:
         signal.signal(signal.SIGTERM, self._handle_signal)
 
         try:
+            # 发送启动告警
+            if self.alerter:
+                mailboxes = [mb.strip() for mb in config.sync_mailboxes.split(',') if mb.strip()]
+                await self.alerter.alert_service_started(mailboxes, config.radar_poll_interval)
+
             # 启动邮件监听器（在后台任务中运行）
             watcher_task = asyncio.create_task(self.watcher.start())
 
@@ -151,6 +171,11 @@ class EmailNotionSyncApp:
             if self.stats_reporter:
                 stats_task = asyncio.create_task(self._stats_reporter_loop())
 
+            # 启动告警检查循环（如果配置）
+            alert_task = None
+            if self.alerter:
+                alert_task = asyncio.create_task(self._alert_check_loop())
+
             # 等待关闭信号
             await self._shutdown_event.wait()
 
@@ -160,12 +185,18 @@ class EmailNotionSyncApp:
             if self.redis_consumer:
                 await self.redis_consumer.stop()
 
+            # 发送停止告警
+            if self.alerter:
+                await self.alerter.alert_service_stopped("收到关闭信号")
+
             # 取消任务
             tasks = [watcher_task, reverse_task]
             if redis_task:
                 tasks.append(redis_task)
             if stats_task:
                 tasks.append(stats_task)
+            if alert_task:
+                tasks.append(alert_task)
             for task in tasks:
                 task.cancel()
                 try:
@@ -187,6 +218,8 @@ class EmailNotionSyncApp:
             if self.stats_reporter:
                 await self.stats_reporter.report_once()
                 await self.stats_reporter.close()
+            if self.alerter:
+                await self.alerter.close()
             logger.info("Shutdown complete")
 
         except Exception as e:
@@ -209,6 +242,66 @@ class EmailNotionSyncApp:
                 break  # shutdown event set
             except asyncio.TimeoutError:
                 pass  # normal timeout, continue loop
+
+    async def _alert_check_loop(self):
+        """告警检查循环：定期检测异常并发送告警"""
+        interval = 60  # 每分钟检查一次
+        logger.info("Alert check loop started (interval=60s)")
+
+        # 跳过首次检查，等服务稳定
+        try:
+            await asyncio.wait_for(self._shutdown_event.wait(), timeout=30)
+            return
+        except asyncio.TimeoutError:
+            pass
+
+        while not self._shutdown_event.is_set():
+            try:
+                await self._check_and_alert()
+            except Exception as e:
+                logger.debug(f"Alert check error: {e}")
+
+            try:
+                await asyncio.wait_for(self._shutdown_event.wait(), timeout=interval)
+                break
+            except asyncio.TimeoutError:
+                pass
+
+    async def _check_and_alert(self):
+        """执行一次告警检查"""
+        if not self.alerter:
+            return
+
+        stats = self.watcher.get_stats()
+
+        # 1. 连续错误检查
+        consecutive = stats.get("consecutive_errors", 0)
+        if consecutive >= 3:
+            last_err = ""
+            await self.alerter.alert_consecutive_errors(consecutive, last_err)
+
+        # 2. 服务不健康
+        if not stats.get("healthy", True):
+            await self.alerter.alert_service_unhealthy(consecutive)
+
+        # 3. dead_letter 累积
+        sync_store_stats = stats.get("sync_store", {})
+        dead_count = sync_store_stats.get("dead_letter", 0)
+        if dead_count >= config.alert_dead_letter_threshold:
+            await self.alerter.alert_dead_letters(dead_count, config.alert_dead_letter_threshold)
+
+        # 4. 雷达不可用
+        radar_available = stats.get("radar", {}).get("available", True)
+        if not radar_available:
+            await self.alerter.alert_radar_unavailable()
+
+        # 5. Redis 断连检查
+        if self.redis_consumer:
+            rc_stats = self.redis_consumer.get_stats()
+            if rc_stats.get("connected") is False:
+                await self.alerter.alert_redis_disconnected(
+                    rc_stats.get("last_error", "unknown")
+                )
 
     async def _stats_reporter_loop(self):
         """看板统计上报循环"""
