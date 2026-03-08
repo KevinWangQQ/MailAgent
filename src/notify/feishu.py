@@ -258,10 +258,20 @@ class FeishuNotifier:
         if actions:
             elements.append({"tag": "action", "actions": actions})
 
+        # 构建标题: "action - from - subject"，截断到 40 字符
+        title_parts = [ai_action or "需要处理", sender_display]
+        title_base = " - ".join(title_parts)
+        max_subject_len = 40 - len(title_base) - 3  # 3 for " - "
+        if max_subject_len > 5:
+            subj_short = subject[:max_subject_len] + ("..." if len(subject) > max_subject_len else "")
+            card_title = f"{title_base} - {subj_short}"
+        else:
+            card_title = title_base[:40]
+
         return {
             "config": {"update_multi": True},
             "header": {
-                "title": {"content": f"📬 {ai_action or '需要处理'}", "tag": "plain_text"},
+                "title": {"content": f"📬 {card_title}", "tag": "plain_text"},
                 "template": template,
             },
             "elements": elements,
