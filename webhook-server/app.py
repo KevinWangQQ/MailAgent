@@ -101,7 +101,8 @@ class CommandRequest(BaseModel):
             "- `create_draft` — 创建 Mail.app 回复草稿\n"
             "- `flag_changed` — 同步旗标/已读状态到 Mail.app\n"
             "- `ai_reviewed` — AI 审核完成，触发飞书通知 + Mail.app 标旗\n"
-            "- `completed` — 标记已完成，移除 Mail.app 旗标"
+            "- `completed` — 标记已完成，移除 Mail.app 旗标\n"
+            "- `query_mail` — 搜索邮件元数据（纯读操作，基于 SQLite）"
         ),
         examples=["create_draft"],
     )
@@ -420,6 +421,7 @@ async def handle_command(body: CommandRequest, request: Request):
     | `flag_changed` | 同步旗标/已读状态到 Mail.app | `message_id` + `is_read`/`is_flagged` |
     | `ai_reviewed` | AI 审核完成 → 飞书通知 + 标旗 | `message_id` + `ai_action` + `ai_priority` |
     | `completed` | 标记已完成 → 移除 Mail.app 旗标 | `message_id` |
+    | `query_mail` | 搜索邮件元数据 | 至少一个筛选条件 |
 
     ## 完整调用流程
 

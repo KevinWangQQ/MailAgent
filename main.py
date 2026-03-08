@@ -64,6 +64,7 @@ class EmailNotionSyncApp:
             self.redis_consumer.on("completed", handlers.handle_completed)
             self.redis_consumer.on("create_draft", handlers.handle_create_draft)
             self.redis_consumer.on("page_updated", handlers.handle_page_updated)
+            self.redis_consumer.on("query_mail", handlers.handle_query_mail)
 
             logger.info(f"Redis event consumer configured: queue={queue_key}")
 

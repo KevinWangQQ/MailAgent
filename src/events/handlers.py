@@ -320,6 +320,40 @@ class EventHandlers:
         except Exception:
             pass
 
+    async def handle_query_mail(self, event: Dict):
+        """查询邮件元数据（纯读操作，基于 SyncStore SQLite 查询）"""
+        props = event.get("properties", {})
+        event_id = event.get("id", "")
+
+        # 提取查询参数
+        filters = {}
+        for key in ("query", "from", "subject", "date_from", "date_to", "mailbox"):
+            val = props.get(key)
+            if val:
+                filters[key] = val
+
+        for key in ("is_flagged", "is_read", "has_notion"):
+            val = props.get(key)
+            if val is not None:
+                filters[key] = bool(val)
+
+        limit = min(int(props.get("limit", 10)), 50)
+        offset = int(props.get("offset", 0))
+
+        logger.info(f"query_mail: filters={filters} limit={limit} offset={offset}")
+
+        result = self.sync_store.search_emails(filters, limit=limit, offset=offset)
+
+        # 为有 notion_page_id 的邮件附加 notion_url
+        notion_base = "https://www.notion.so/"
+        for email in result["emails"]:
+            page_id = email.get("notion_page_id")
+            if page_id:
+                email["notion_url"] = f"{notion_base}{page_id.replace('-', '')}"
+
+        await self._publish(event_id, {"status": "success", **result})
+        logger.info(f"query_mail: returned {len(result['emails'])}/{result['total']} emails")
+
     async def handle_page_updated(self, event: Dict):
         """通用事件: 根据内容自动判断"""
         props = event.get("properties", {})

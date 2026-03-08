@@ -1589,6 +1589,132 @@ class SyncStore:
                 conn.rollback()
                 return False
 
+    # ==================== 邮件搜索（query_mail API） ====================
+
+    def search_emails(self, filters: Dict, limit: int = 10, offset: int = 0) -> Dict:
+        """搜索邮件元数据
+
+        支持多条件组合查询，用于 query_mail API。
+
+        Args:
+            filters: 筛选条件字典，支持的 key：
+                - query: 全文模糊搜索（匹配 subject + sender + sender_name）
+                - from: 发件人筛选（LIKE 匹配 sender 或 sender_name）
+                - subject: 主题筛选（LIKE 匹配）
+                - date_from: 起始日期 YYYY-MM-DD
+                - date_to: 截止日期 YYYY-MM-DD
+                - mailbox: 邮箱名
+                - is_flagged: 旗标状态
+                - is_read: 已读状态
+                - has_notion: 是否已同步到 Notion
+            limit: 最大返回数量（上限 50）
+            offset: 分页偏移
+
+        Returns:
+            {"total": int, "limit": int, "offset": int, "emails": [...]}
+        """
+        limit = min(limit, 50)
+        conditions = ["sync_status IN ('synced', 'pending', 'fetched')"]
+        params: List[Any] = []
+
+        # 全文模糊搜索
+        query = filters.get("query")
+        if query:
+            conditions.append("(subject LIKE ? OR sender LIKE ? OR sender_name LIKE ?)")
+            like_val = f"%{query}%"
+            params.extend([like_val, like_val, like_val])
+
+        # 发件人筛选
+        from_filter = filters.get("from")
+        if from_filter:
+            conditions.append("(sender LIKE ? OR sender_name LIKE ?)")
+            like_val = f"%{from_filter}%"
+            params.extend([like_val, like_val])
+
+        # 主题筛选
+        subject_filter = filters.get("subject")
+        if subject_filter:
+            conditions.append("subject LIKE ?")
+            params.append(f"%{subject_filter}%")
+
+        # 日期范围
+        date_from = filters.get("date_from")
+        if date_from:
+            conditions.append("date_received >= ?")
+            params.append(date_from)
+
+        date_to = filters.get("date_to")
+        if date_to:
+            conditions.append("date_received <= ?")
+            params.append(f"{date_to} 23:59:59")
+
+        # 邮箱名
+        mailbox = filters.get("mailbox")
+        if mailbox:
+            conditions.append("mailbox = ?")
+            params.append(mailbox)
+
+        # 旗标状态
+        is_flagged = filters.get("is_flagged")
+        if is_flagged is not None:
+            conditions.append("is_flagged = ?")
+            params.append(1 if is_flagged else 0)
+
+        # 已读状态
+        is_read = filters.get("is_read")
+        if is_read is not None:
+            conditions.append("is_read = ?")
+            params.append(1 if is_read else 0)
+
+        # 是否已同步到 Notion
+        has_notion = filters.get("has_notion")
+        if has_notion is not None:
+            if has_notion:
+                conditions.append("notion_page_id IS NOT NULL")
+            else:
+                conditions.append("notion_page_id IS NULL")
+
+        where_clause = " AND ".join(conditions)
+
+        with self._connection() as conn:
+            cursor = conn.cursor()
+
+            try:
+                # 查询总数
+                cursor.execute(f"SELECT COUNT(*) FROM email_metadata WHERE {where_clause}", params)
+                total = cursor.fetchone()[0]
+
+                # 查询数据
+                cursor.execute(f"""
+                    SELECT internal_id, message_id, subject, sender, sender_name,
+                           date_received, mailbox, is_read, is_flagged, notion_page_id
+                    FROM email_metadata
+                    WHERE {where_clause}
+                    ORDER BY date_received DESC
+                    LIMIT ? OFFSET ?
+                """, params + [limit, offset])
+
+                emails = []
+                for row in cursor.fetchall():
+                    emails.append({
+                        "internal_id": row["internal_id"],
+                        "message_id": row["message_id"],
+                        "subject": row["subject"],
+                        "sender": row["sender"],
+                        "sender_name": row["sender_name"],
+                        "date_received": row["date_received"],
+                        "mailbox": row["mailbox"],
+                        "is_read": bool(row["is_read"]),
+                        "is_flagged": bool(row["is_flagged"]),
+                        "notion_page_id": row["notion_page_id"],
+                    })
+
+                return {"total": total, "limit": limit, "offset": offset, "emails": emails}
+
+            except sqlite3.Error as e:
+                logger.error(f"Failed to search emails: {e}")
+                return {"total": 0, "limit": limit, "offset": offset, "emails": []}
+
     def get_dead_letter_emails(self, limit: int = 100) -> List[EmailMetadata]:
         """获取死信队列中的邮件（超过最大重试次数的邮件）
 

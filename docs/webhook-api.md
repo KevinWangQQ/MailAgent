@@ -72,6 +72,51 @@ Flat JSON，`database_id` 和 `command` 为必填，其余字段自动透传为 
 | `flag_changed` | 同步旗标/已读状态到 Mail.app | `message_id` + `is_read`/`is_flagged` |
 | `ai_reviewed` | AI 审核完成 → 飞书通知 + 标旗 | `message_id` + `ai_action` + `ai_priority` |
 | `completed` | 标记已完成 → 移除 Mail.app 旗标 | `message_id` |
+| `query_mail` | 搜索邮件元数据（纯读操作） | 至少一个筛选条件 |
+
+#### `query_mail` 字段
+
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| `query` | string | 否 | | 全文模糊搜索（匹配 subject + sender + sender_name） |
+| `from` | string | 否 | | 发件人筛选（LIKE 匹配 sender 或 sender_name） |
+| `subject` | string | 否 | | 主题筛选（LIKE 匹配） |
+| `date_from` | string | 否 | | 起始日期 `YYYY-MM-DD` |
+| `date_to` | string | 否 | | 截止日期 `YYYY-MM-DD` |
+| `mailbox` | string | 否 | | 邮箱名（`收件箱` / `发件箱`） |
+| `is_flagged` | bool | 否 | | 旗标状态 |
+| `is_read` | bool | 否 | | 已读状态 |
+| `has_notion` | bool | 否 | | 是否已同步到 Notion |
+| `limit` | int | 否 | `10` | 最大返回数量（上限 50） |
+| `offset` | int | 否 | `0` | 分页偏移 |
+
+**筛选条件均可选，组合使用**。至少提供一个筛选条件。
+
+**返回结构**（通过 `/api/command/{event_id}/result` 获取）：
+
+```json
+{
+  "status": "success",
+  "total": 42,
+  "limit": 10,
+  "offset": 0,
+  "emails": [
+    {
+      "internal_id": 48197,
+      "message_id": "<xxx@outlook.com>",
+      "subject": "Re: OKR Discussion",
+      "sender": "alice@company.com",
+      "sender_name": "Alice Wang",
+      "date_received": "2026-03-05 14:30:00",
+      "mailbox": "收件箱",
+      "is_read": true,
+      "is_flagged": false,
+      "notion_page_id": "31a15375830d81798e75fcfce933808b",
+      "notion_url": "https://www.notion.so/31a15375830d81798e75fcfce933808b"
+    }
+  ]
+}
+```
 
 #### `create_draft` 字段
 
@@ -275,7 +320,56 @@ curl -s -X POST https://mailagent.chenge.ink/api/command \
   }"
 ```
 
-### 示例 5: Fire-and-forget（不等待结果）
+### 示例 5: 搜索邮件（query_mail）
+
+```bash
+# 搜索包含 "OKR" 的邮件
+RESPONSE=$(curl -s -X POST https://mailagent.chenge.ink/api/command \
+  -H "Content-Type: application/json" \
+  -H "X-Webhook-Token: $TOKEN" \
+  -d "{
+    \"database_id\": \"$DB_ID\",
+    \"command\": \"query_mail\",
+    \"subject\": \"OKR\",
+    \"limit\": 5
+  }")
+
+EVENT_ID=$(echo "$RESPONSE" | jq -r '.event_id')
+
+# 等待结果
+curl -s "https://mailagent.chenge.ink/api/command/$EVENT_ID/result?wait=10" \
+  -H "X-Webhook-Token: $TOKEN"
+# {"status":"success","total":3,"limit":5,"offset":0,"emails":[...]}
+```
+
+```bash
+# 查找某人的未读邮件
+curl -s -X POST https://mailagent.chenge.ink/api/command \
+  -H "Content-Type: application/json" \
+  -H "X-Webhook-Token: $TOKEN" \
+  -d "{
+    \"database_id\": \"$DB_ID\",
+    \"command\": \"query_mail\",
+    \"from\": \"alice\",
+    \"is_read\": false
+  }"
+```
+
+```bash
+# 日期范围 + 旗标邮件
+curl -s -X POST https://mailagent.chenge.ink/api/command \
+  -H "Content-Type: application/json" \
+  -H "X-Webhook-Token: $TOKEN" \
+  -d "{
+    \"database_id\": \"$DB_ID\",
+    \"command\": \"query_mail\",
+    \"date_from\": \"2026-03-01\",
+    \"date_to\": \"2026-03-07\",
+    \"is_flagged\": true
+  }"
+```
+
+### 示例 6: Fire-and-forget（不等待结果）
 
 ```bash
 # 只发送，不查询结果
