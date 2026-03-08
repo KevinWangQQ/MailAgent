@@ -8,6 +8,11 @@ macOS 邮件实时同步到 Notion，支持 AI 自动分类与处理。
 |------|--------|------|
 | **邮件同步** | Mail.app | 邮件内容、附件、线程关系同步到 Notion |
 | **会议邀请识别** | 邮件中的 .ics | 自动解析会议邀请创建日程 |
+| **双向 Flag 同步** | Mail.app ↔ Notion | 已读/旗标状态实时双向同步 |
+| **AI 分类处理** | Notion Automation | AI 自动审核 + 反向同步到 Mail.app |
+| **飞书通知** | 飞书应用机器人 | 重要邮件推送 + 交互式回复按钮 |
+| **飞书告警** | 飞书 Webhook Bot | 服务异常实时告警（可配置级别/冷却） |
+| **监控看板** | 远程 Dashboard | 同步概览、服务状态、告警、Redis 队列 |
 | **日历同步** | Calendar.app | 仅用于同步历史日程（可选） |
 
 ### 邮件同步特性
@@ -63,8 +68,17 @@ MAIL_ACCOUNT_NAME=Exchange        # Mail.app 账户名
 
 ### 3. 系统权限
 
-**Full Disk Access**（必需）
-- 系统设置 → 隐私与安全 → 完全磁盘访问权限 → 添加 Terminal
+运行 MailAgent 的终端应用（Terminal / iTerm2）需要以下权限：
+
+| 权限 | 位置 | 用途 |
+|------|------|------|
+| **完全磁盘访问权限** | 隐私与安全 | SQLite 雷达读取 Mail.app 数据库 |
+| **自动化 → Mail** | 隐私与安全 → 自动化 | AppleScript 操作 Mail.app |
+| **自动化 → System Events** | 隐私与安全 → 自动化 | 创建草稿时模拟按键粘贴内容 |
+| **辅助功能** | 隐私与安全 | System Events 发送按键 |
+| **屏幕录制** | 隐私与安全 | 草稿截图（仅 `--screenshot` 时需要） |
+
+> PM2 启动的进程继承启动时所在终端的权限。如果之前在 Cursor 中运行，切换到 iTerm2 需要重新授权。
 
 ### 4. 测试连接
 
@@ -98,8 +112,16 @@ python3 main.py
 **生产环境（PM2）：**
 ```bash
 npm install -g pm2
-pm2 start main.py --name mail-sync --interpreter python3
+# 必须指定 venv 中的 python 解释器
+pm2 start main.py --name mail-sync --interpreter ./venv/bin/python3
 pm2 save && pm2 startup
+```
+
+**PM2 常用命令：**
+```bash
+pm2 logs mail-sync        # 查看日志
+pm2 restart mail-sync     # 重启服务
+pm2 status                # 查看状态
 ```
 
 ---
@@ -189,22 +211,35 @@ MailAgent/
 ├── calendar_main.py        # 日历同步入口（可选，一般不需要）
 ├── src/
 │   ├── mail/               # 邮件模块
-│   │   ├── new_watcher.py      # 监听器
-│   │   ├── sqlite_radar.py     # SQLite 雷达
+│   │   ├── new_watcher.py      # 监听器（v3 架构主循环）
+│   │   ├── sqlite_radar.py     # SQLite 雷达（变化检测）
 │   │   ├── applescript_arm.py  # AppleScript 获取器
 │   │   ├── sync_store.py       # 同步状态存储
+│   │   ├── reverse_sync.py     # 反向同步（Notion → Mail.app）
 │   │   ├── meeting_sync.py     # 会议邀请同步
 │   │   ├── icalendar_parser.py # iCalendar 解析
 │   │   └── reader.py           # 邮件解析
-│   ├── calendar/           # 日历模块（可选）
+│   ├── notify/             # 通知模块
+│   │   ├── feishu.py           # 飞书应用机器人（邮件通知）
+│   │   └── alert.py            # 飞书告警机器人（服务告警）
+│   ├── events/             # 事件模块
+│   │   ├── redis_consumer.py   # Redis 队列消费者
+│   │   └── handlers.py         # Webhook 事件处理器
 │   ├── notion/             # Notion 邮件同步
 │   ├── calendar_notion/    # Notion 日历同步
 │   ├── converter/          # HTML 转换
+│   ├── stats_reporter.py   # 看板统计上报
 │   ├── models.py           # 数据模型
 │   └── config.py           # 配置管理
 ├── scripts/
 │   ├── initial_sync.py     # 初始化同步
+│   ├── create_reply_draft.sh  # 创建回复草稿
+│   ├── html_clipboard.py      # HTML 剪贴板工具
+│   ├── deploy-webhook.sh      # 部署 webhook-server
 │   └── test_*.py           # 测试脚本
+├── webhook-server/         # 远程 Webhook 服务
+│   ├── app.py                 # FastAPI 服务
+│   └── dashboard.html         # 监控看板
 ├── data/
 │   └── sync_store.db       # 同步状态数据库
 └── logs/

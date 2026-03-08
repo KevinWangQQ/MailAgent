@@ -46,7 +46,7 @@ python3 scripts/initial_sync.py --action all --yes
 
 # 运行服务
 python3 main.py                         # 前台运行
-pm2 start main.py --name mail-sync --interpreter python3  # PM2
+pm2 start main.py --name mail-sync --interpreter ./venv/bin/python3  # PM2（必须用 venv python）
 
 # 日志
 tail -f logs/sync.log
