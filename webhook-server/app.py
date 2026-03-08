@@ -82,7 +82,7 @@ tags_metadata = [
 app = FastAPI(
     title="MailAgent Webhook Server",
     description=APP_DESCRIPTION,
-    version="1.2.0",
+    version="1.3.0",
     openapi_tags=tags_metadata,
     lifespan=lifespan,
 )
@@ -107,7 +107,8 @@ class CommandRequest(BaseModel):
             "- `flag_changed` — 同步旗标/已读状态到 Mail.app\n"
             "- `ai_reviewed` — AI 审核完成，触发飞书通知 + Mail.app 标旗\n"
             "- `completed` — 标记已完成，移除 Mail.app 旗标\n"
-            "- `query_mail` — 搜索邮件元数据（纯读操作，基于 SQLite）"
+            "- `query_mail` — 搜索邮件元数据（支持 SyncStore 或 Mail.app 全量搜索）\n"
+            "- `fetch_mail_content` — 获取邮件完整正文（通过 AppleScript）"
         ),
         examples=["create_draft"],
     )
@@ -167,11 +168,62 @@ class CommandRequest(BaseModel):
     )
     is_read: Optional[bool] = Field(
         None,
-        description="已读状态（仅 `flag_changed` 有效）",
+        description="已读状态（`flag_changed` 同步旗标；`query_mail source=mail` 过滤条件）",
     )
     is_flagged: Optional[bool] = Field(
         None,
-        description="旗标状态（仅 `flag_changed` 有效）",
+        description="旗标状态（`flag_changed` 同步旗标；`query_mail source=mail` 过滤条件）",
+    )
+    # ── query_mail 专用 ──
+    source: Optional[str] = Field(
+        None,
+        description=(
+            "数据源（仅 `query_mail` 有效）：\n"
+            "- `syncstore`（默认）— 仅搜索已同步到 Notion 的邮件（~2700封）\n"
+            "- `mail` — 搜索 Mail.app 全量邮件（~24k封，直接查 SQLite Envelope Index）"
+        ),
+        examples=["mail"],
+    )
+    query: Optional[str] = Field(
+        None,
+        description="全文搜索关键词（仅 `query_mail source=mail`，同时搜索主题和发件人）",
+        examples=["SaaS"],
+    )
+    date_from: Optional[str] = Field(
+        None,
+        description="起始日期过滤 YYYY-MM-DD（仅 `query_mail source=mail`）",
+        examples=["2025-06-01"],
+    )
+    date_to: Optional[str] = Field(
+        None,
+        description="截止日期过滤 YYYY-MM-DD（仅 `query_mail source=mail`）",
+        examples=["2025-06-30"],
+    )
+    # ── fetch_mail_content 专用 ──
+    internal_id: Optional[int] = Field(
+        None,
+        description="邮件 internal_id（`fetch_mail_content` 必填，来自 `query_mail` 返回结果）",
+        examples=[48086],
+    )
+    format: Optional[str] = Field(
+        None,
+        description=(
+            "返回格式（仅 `fetch_mail_content` 有效）：\n"
+            "- `full`（默认）— 纯文本 + HTML 全文 + 元数据\n"
+            "- `text` — 仅纯文本全文 + 基本元数据"
+        ),
+        examples=["full"],
+    )
+    # ── 通用分页 ──
+    limit: Optional[int] = Field(
+        None,
+        description="返回数量上限（`query_mail` 默认 10，最大 50）",
+        examples=[20],
+    )
+    offset: Optional[int] = Field(
+        None,
+        description="分页偏移量（`query_mail` 默认 0）",
+        examples=[0],
     )
 
 
@@ -428,7 +480,8 @@ async def handle_command(body: CommandRequest, request: Request):
     | `flag_changed` | 同步旗标/已读状态到 Mail.app | `message_id` + `is_read`/`is_flagged` |
     | `ai_reviewed` | AI 审核完成 → 飞书通知 + 标旗 | `message_id` + `ai_action` + `ai_priority` |
     | `completed` | 标记已完成 → 移除 Mail.app 旗标 | `message_id` |
-    | `query_mail` | 搜索邮件元数据 | 至少一个筛选条件 |
+    | `query_mail` | 搜索邮件元数据 | 至少一个筛选条件（可选 `source=mail` 搜全量） |
+    | `fetch_mail_content` | 获取邮件完整正文 | `internal_id`（来自 query_mail 返回） |
 
     ## 完整调用流程
 

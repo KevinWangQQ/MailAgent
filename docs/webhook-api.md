@@ -165,15 +165,14 @@ Flat JSON，`database_id` 和 `command` 为必填，其余字段自动透传为 
 |------|------|------|--------|------|
 | `internal_id` | int | **是** | | 邮件内部 ID（从 `query_mail` 结果获取） |
 | `mailbox` | string | 否 | | 邮箱名（指定可加速查询） |
-| `format` | string | 否 | `full` | 返回格式：`full` / `text` / `summary` |
+| `format` | string | 否 | `full` | 返回格式：`full` / `text` |
 
 **返回格式对比**：
 
 | format | 返回字段 | 适用场景 |
 |--------|---------|---------|
-| `full` | internal_id, message_id, subject, sender, date, content(纯文本), html(HTML正文), is_read, is_flagged, thread_id, notion_page_id, notion_url | 完整邮件内容 |
-| `text` | internal_id, subject, sender, date, content(纯文本) | 仅需文本正文 |
-| `summary` | internal_id, subject, sender, date, content(前500字) | 快速预览 |
+| `full` | internal_id, message_id, subject, sender, date, content(纯文本全文), html(HTML全文), is_read, is_flagged, thread_id, notion_page_id, notion_url | 完整邮件内容 |
+| `text` | internal_id, subject, sender, date, content(纯文本全文) | 仅需文本正文 |
 
 **`full` 格式返回结构**：
 
@@ -486,19 +485,6 @@ EVENT_ID=$(echo "$RESPONSE" | jq -r '.event_id')
 curl -s "https://mailagent.chenge.ink/api/command/$EVENT_ID/result?wait=10" \
   -H "X-Webhook-Token: $TOKEN"
 # {"status":"success","internal_id":48086,"subject":"AW: Catch Up meeting...","content":"Hi Lucien,...","html":"<html>..."}
-```
-
-```bash
-# 仅获取摘要（前 500 字）
-curl -s -X POST https://mailagent.chenge.ink/api/command \
-  -H "Content-Type: application/json" \
-  -H "X-Webhook-Token: $TOKEN" \
-  -d "{
-    \"database_id\": \"$DB_ID\",
-    \"command\": \"fetch_mail_content\",
-    \"internal_id\": 48086,
-    \"format\": \"summary\"
-  }"
 ```
 
 ### 示例 8: Fire-and-forget（不等待结果）

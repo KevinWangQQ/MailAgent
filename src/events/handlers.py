@@ -429,12 +429,11 @@ class EventHandlers:
         请求参数:
             internal_id: int (必填)
             mailbox: str (可选，指定可加速)
-            format: "full" | "text" | "summary" (默认 full)
+            format: "full" | "text" (默认 full)
 
         返回:
             full: message_id, subject, sender, date, content(纯文本), html, is_read, is_flagged
             text: subject, sender, date, content(纯文本)
-            summary: subject, sender, date, content前500字
         """
         self._stats["fetch_mail_content"] += 1
         props = event.get("properties", {})
@@ -485,15 +484,7 @@ class EventHandlers:
                 logger.warning(f"MIME parse error for {internal_id}: {e}")
 
         # 根据 format 构建返回
-        if fmt == "summary":
-            result_data = {
-                "internal_id": internal_id,
-                "subject": full_email.get("subject", ""),
-                "sender": full_email.get("sender", ""),
-                "date": full_email.get("date", ""),
-                "content": plain_body[:500] + ("..." if len(plain_body) > 500 else ""),
-            }
-        elif fmt == "text":
+        if fmt == "text":
             result_data = {
                 "internal_id": internal_id,
                 "subject": full_email.get("subject", ""),
@@ -501,7 +492,7 @@ class EventHandlers:
                 "date": full_email.get("date", ""),
                 "content": plain_body,
             }
-        else:  # full
+        else:  # full (default)
             result_data = {
                 "internal_id": internal_id,
                 "message_id": full_email.get("message_id", ""),
