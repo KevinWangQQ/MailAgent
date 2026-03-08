@@ -756,9 +756,7 @@ async def stats_report(request: Request):
     ts = body.get("timestamp", int(time.time()))
     key_prefix = f"{STATS_KEY_PREFIX}{database_id}"
 
-    pipe = redis_pool.pipeline()
-
-    # Store each section as a Redis hash
+    # Store each section as a Redis hash (non-transactional pipeline for compatibility)
     for section in ("service", "watcher", "reverse", "redis_consumer", "handlers"):
         data = body.get(section)
         if data and isinstance(data, dict):
@@ -766,22 +764,21 @@ async def stats_report(request: Request):
             flat = {}
             for k, v in data.items():
                 flat[k] = json.dumps(v, ensure_ascii=False) if isinstance(v, (dict, list)) else str(v)
-            pipe.delete(f"{key_prefix}:{section}")
-            pipe.hset(f"{key_prefix}:{section}", mapping=flat)
-            pipe.expire(f"{key_prefix}:{section}", STATS_TTL)
+            if flat:
+                await redis_pool.delete(f"{key_prefix}:{section}")
+                await redis_pool.hset(f"{key_prefix}:{section}", mapping=flat)
+                await redis_pool.expire(f"{key_prefix}:{section}", STATS_TTL)
 
     # Store heartbeat
-    pipe.hset(f"{key_prefix}:service", "last_heartbeat", str(ts))
+    await redis_pool.hset(f"{key_prefix}:service", "last_heartbeat", str(ts))
 
     # Store alerts (append + trim)
     alerts = body.get("alerts", [])
     for alert in alerts:
-        pipe.lpush(f"{key_prefix}:alerts", json.dumps(alert, ensure_ascii=False))
+        await redis_pool.lpush(f"{key_prefix}:alerts", json.dumps(alert, ensure_ascii=False))
     if alerts:
-        pipe.ltrim(f"{key_prefix}:alerts", 0, 49)
-        pipe.expire(f"{key_prefix}:alerts", 86400)  # 24h
-
-    await pipe.execute()
+        await redis_pool.ltrim(f"{key_prefix}:alerts", 0, 49)
+        await redis_pool.expire(f"{key_prefix}:alerts", 86400)  # 24h
     return {"ok": True}
 
 
