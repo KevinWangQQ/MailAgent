@@ -241,6 +241,7 @@ class EventHandlers:
         script_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "scripts")
         clipboard_py = os.path.join(script_path, "html_clipboard.py")
 
+        clipboard_html_file = None
         if reply_suggestion_rich:
             from src.converter.notion_rich_text import rich_text_to_html
             html = rich_text_to_html(reply_suggestion_rich)
@@ -251,6 +252,11 @@ class EventHandlers:
             )
             await proc_clip.communicate(input=html.encode())
             clipboard_ready = proc_clip.returncode == 0
+            # 保存 HTML 到临时文件，供脚本粘贴重试时使用
+            if clipboard_ready:
+                clipboard_html_file = os.path.join('/tmp', f'mail_draft_clip_{int(_t0 * 1000)}.html')
+                with open(clipboard_html_file, 'w') as f:
+                    f.write(html)
         elif reply_suggestion:
             logger.info(f"create_draft: path=markdown md_len={len(reply_suggestion)}")
             proc_clip = await asyncio.create_subprocess_exec(
@@ -274,6 +280,8 @@ class EventHandlers:
         cmd = ["bash", draft_script, "--mode", mode, "--reply-text", reply_suggestion or "(rich text)", "--mailbox", mailbox]
         if clipboard_ready:
             cmd.append("--clipboard-ready")
+        if clipboard_html_file:
+            cmd.extend(["--clipboard-html-file", clipboard_html_file])
         if internal_id:
             cmd.extend(["--internal-id", str(internal_id)])
         elif message_id:
@@ -309,7 +317,7 @@ class EventHandlers:
                 self._stats["create_draft_success"] += 1
                 await self._publish(event_id, {"status": "success", **result})
             else:
-                error = stderr.decode()[:200]
+                error = (stderr.decode()[:200] + " | " + output[:200]).strip(" |")
                 self._stats["create_draft_error"] += 1
                 logger.error(f"Draft script failed (rc={proc.returncode}): {error}")
                 await self._publish(event_id, {"status": "error", "error": error})
@@ -323,6 +331,13 @@ class EventHandlers:
             logger.error(f"Draft creation error: {e}")
             await self._close_mail_window()
             await self._publish(event_id, {"status": "error", "error": str(e)})
+        finally:
+            # 清理临时 HTML 文件
+            if clipboard_html_file and os.path.exists(clipboard_html_file):
+                try:
+                    os.unlink(clipboard_html_file)
+                except OSError:
+                    pass
 
     async def _publish(self, event_id: str, result: Dict):
         """发布事件执行结果到 Redis"""

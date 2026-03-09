@@ -53,6 +53,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EXTRA_TO=""
 EXTRA_CC=""
 _REPLY_WINDOW_OPEN=false
+CLIPBOARD_HTML_FILE=""
 
 # 失败时关闭残留的回复窗口
 _cleanup_on_error() {
@@ -83,6 +84,7 @@ while [[ $# -gt 0 ]]; do
     --extra-to) EXTRA_TO="$2"; shift 2 ;;
     --extra-cc) EXTRA_CC="$2"; shift 2 ;;
     --clipboard-ready) CLIPBOARD_READY=true; shift ;;
+    --clipboard-html-file) CLIPBOARD_HTML_FILE="$2"; shift 2 ;;
     --screenshot) SCREENSHOT=true; shift ;;
     *) echo "Unknown arg: $1" >&2; exit 1 ;;
   esac
@@ -186,25 +188,103 @@ capture_screenshot() {
   fi
 }
 
-# System Events 粘贴内容 + 截图 + 保存关闭
+# 唤醒显示器（防止屏幕休眠导致 System Events 失效）
+wake_display() {
+  caffeinate -u -t 10 &>/dev/null &
+  sleep 2
+}
+
+# 重新设置剪贴板（用于重试）
+reset_clipboard() {
+  if [[ -n "$CLIPBOARD_HTML_FILE" && -f "$CLIPBOARD_HTML_FILE" ]]; then
+    python3 "$SCRIPT_DIR/html_clipboard.py" --set-html < "$CLIPBOARD_HTML_FILE"
+  else
+    printf '%s' "$REPLY_TEXT" | python3 "$SCRIPT_DIR/html_clipboard.py"
+  fi
+}
+
+# 验证粘贴是否成功
+verify_paste() {
+  # 设置标记到剪贴板
+  printf '%s' "__PASTE_VERIFY__" | pbcopy
+
+  # 通过 System Events 全选 + 复制正文内容
+  osascript 2>/dev/null <<'ASEOF'
+tell application "System Events"
+  tell process "Mail"
+    keystroke "a" using command down
+    delay 0.5
+    keystroke "c" using command down
+    delay 0.5
+    key code 124
+  end tell
+end tell
+ASEOF
+
+  local content
+  content=$(pbpaste 2>/dev/null)
+
+  # 如果剪贴板没变，说明 System Events 完全不工作（屏幕休眠）
+  if [[ "$content" == "__PASTE_VERIFY__" ]]; then
+    echo "verify: System Events not responsive (display may be asleep)" >&2
+    return 1
+  fi
+
+  # 如果有预期文本（非 rich text），验证正文包含该文本
+  if [[ "$REPLY_TEXT" != "(rich text)" ]]; then
+    local expected
+    expected=$(printf '%s' "$REPLY_TEXT" | sed '/^[[:space:]]*$/d' | head -1 | sed 's/[*#>`~_\[()]//g' | cut -c1-30 | xargs)
+    if [[ -n "$expected" && ${#expected} -gt 3 ]]; then
+      if printf '%s' "$content" | grep -qF "$expected" 2>/dev/null; then
+        return 0
+      fi
+      echo "verify: expected text not found in body (expected: '$expected')" >&2
+      return 1
+    fi
+  fi
+
+  # Fallback（rich text 或短文本）：System Events 可用即认为成功
+  return 0
+}
+
+# System Events 粘贴内容 + 验证 + 截图 + 保存关闭
 paste_and_save() {
   local text="$1"
-  # 设置 HTML 富文本剪贴板（跳过如果 handler 已预设）
+  local max_attempts=3
+  local attempt=1
+
+  # 唤醒显示器
+  wake_display
+
+  # 首次设置剪贴板（如果 handler 未预设）
   if [[ "$CLIPBOARD_READY" != "true" ]]; then
     printf '%s' "$text" | python3 "$SCRIPT_DIR/html_clipboard.py"
   fi
-  osascript <<'ASEOF'
+
+  while [[ $attempt -le $max_attempts ]]; do
+    if [[ $attempt -gt 1 ]]; then
+      echo "Paste retry attempt $attempt/$max_attempts" >&2
+      wake_display
+      reset_clipboard
+    fi
+
+    # 激活 Mail 并粘贴
+    osascript <<'ASEOF'
 tell application "Mail" to activate
-delay 1
+delay 1.5
 tell application "System Events"
   tell process "Mail"
     keystroke "v" using command down
   end tell
 end tell
 ASEOF
-  sleep 2
-  capture_screenshot
-  osascript <<'ASEOF'
+    sleep 1
+
+    # 验证粘贴结果
+    if verify_paste; then
+      # 粘贴成功 — 截图、保存、关闭
+      capture_screenshot
+      osascript <<'ASEOF'
 tell application "System Events"
   tell process "Mail"
     keystroke "s" using command down
@@ -213,7 +293,15 @@ tell application "System Events"
   end tell
 end tell
 ASEOF
-  sleep 1
+      sleep 1
+      return 0
+    fi
+
+    attempt=$((attempt + 1))
+  done
+
+  echo "Paste verification failed after $max_attempts attempts" >&2
+  return 1
 }
 
 # 输出结果 JSON
@@ -228,7 +316,7 @@ output_result() {
   echo "{\"success\":${success},\"method\":\"${method}\"${ss_field}${note_field}}"
 }
 
-# ── Reply / Reply-All 模式 ──
+# ── Reply / Reply-All 模式（窗口 + 粘贴 + 唤醒屏幕 + 验证）──
 do_reply() {
   local reply_flag="$1"  # "" 或 " and reply to all"
   local method_suffix="$2"
@@ -258,10 +346,19 @@ do_reply() {
     if [[ "$RESULT" == "ok" ]]; then
       sleep 2
       _REPLY_WINDOW_OPEN=true
-      paste_and_save "$(printf '%s' "$REPLY_TEXT")"
-      _REPLY_WINDOW_OPEN=false
-      output_result "true" "${method_suffix}_internal_id"
-      return 0
+      if paste_and_save "$(printf '%s' "$REPLY_TEXT")"; then
+        _REPLY_WINDOW_OPEN=false
+        output_result "true" "${method_suffix}_internal_id"
+        return 0
+      else
+        # 粘贴验证失败 — 关闭窗口不保存
+        osascript -e 'tell application "Mail" to try
+          close front window saving no
+        end try' 2>/dev/null
+        _REPLY_WINDOW_OPEN=false
+        echo "{\"success\":false,\"method\":\"${method_suffix}_internal_id\",\"error\":\"Paste verification failed after retries\"}"
+        exit 1
+      fi
     fi
     echo "internal_id failed: $RESULT" >&2
   fi
@@ -285,10 +382,18 @@ do_reply() {
     if [[ "$RESULT" == "ok" ]]; then
       sleep 2
       _REPLY_WINDOW_OPEN=true
-      paste_and_save "$(printf '%s' "$REPLY_TEXT")"
-      _REPLY_WINDOW_OPEN=false
-      output_result "true" "${method_suffix}_message_id"
-      return 0
+      if paste_and_save "$(printf '%s' "$REPLY_TEXT")"; then
+        _REPLY_WINDOW_OPEN=false
+        output_result "true" "${method_suffix}_message_id"
+        return 0
+      else
+        osascript -e 'tell application "Mail" to try
+          close front window saving no
+        end try' 2>/dev/null
+        _REPLY_WINDOW_OPEN=false
+        echo "{\"success\":false,\"method\":\"${method_suffix}_message_id\",\"error\":\"Paste verification failed after retries\"}"
+        exit 1
+      fi
     fi
     echo "message_id failed: $RESULT" >&2
   fi
