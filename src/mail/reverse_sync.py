@@ -34,11 +34,13 @@ class NotionToMailSync:
         self,
         notion_sync: NotionSync = None,
         arm: AppleScriptArm = None,
-        sync_store: SyncStore = None
+        sync_store: SyncStore = None,
+        skip_notify: bool = False,
     ):
         self.notion_sync = notion_sync or NotionSync()
         self.arm = arm or AppleScriptArm()
         self.sync_store = sync_store
+        self._skip_notify = skip_notify
         self.last_check: Optional[datetime] = None
         self.sync_count = 0
         self.error_count = 0
@@ -211,7 +213,7 @@ class NotionToMailSync:
             return False
 
     async def _try_notify(self, page: Dict) -> bool:
-        if not self._feishu:
+        if self._skip_notify or not self._feishu:
             return False
 
         ai_action = page.get("ai_action", "")

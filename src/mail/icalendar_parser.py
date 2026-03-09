@@ -21,6 +21,7 @@ import email
 import re
 from email import policy
 from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 from typing import Optional, List, Tuple
 from dataclasses import dataclass, field
 from loguru import logger
@@ -69,6 +70,30 @@ class ICalendarParser:
     PASSCODE_PATTERNS = [
         r'(?:Passcode|Password|Pass code|密码)\s*[:：]\s*(\S{4,20})',
     ]
+
+    # Windows 时区名 → IANA 时区名映射
+    WINDOWS_TZ_MAP = {
+        "China Standard Time": "Asia/Shanghai",
+        "Taipei Standard Time": "Asia/Taipei",
+        "Tokyo Standard Time": "Asia/Tokyo",
+        "Korea Standard Time": "Asia/Seoul",
+        "Singapore Standard Time": "Asia/Singapore",
+        "Pacific Standard Time": "America/Los_Angeles",
+        "Mountain Standard Time": "America/Denver",
+        "Central Standard Time": "America/Chicago",
+        "Eastern Standard Time": "America/New_York",
+        "GMT Standard Time": "Europe/London",
+        "W. Europe Standard Time": "Europe/Berlin",
+        "Central European Standard Time": "Europe/Budapest",
+        "Romance Standard Time": "Europe/Paris",
+        "AUS Eastern Standard Time": "Australia/Sydney",
+        "India Standard Time": "Asia/Kolkata",
+        "Hawaiian Standard Time": "Pacific/Honolulu",
+        "Alaskan Standard Time": "America/Anchorage",
+        "Atlantic Standard Time": "America/Halifax",
+        "SA Pacific Standard Time": "America/Bogota",
+        "UTC": "UTC",
+    }
 
     def __init__(self):
         # 北京时区
@@ -297,12 +322,7 @@ class ICalendarParser:
                     dt = dt.replace(tzinfo=timezone.utc)
                 else:
                     dt = datetime.strptime(value, '%Y%m%dT%H%M%S')
-                    # 如果有时区信息或默认北京时间
-                    if tz_name and ('China' in tz_name or 'Beijing' in tz_name or 'Shanghai' in tz_name):
-                        dt = dt.replace(tzinfo=self.beijing_tz)
-                    else:
-                        # 默认使用北京时间
-                        dt = dt.replace(tzinfo=self.beijing_tz)
+                    dt = dt.replace(tzinfo=self._resolve_timezone(tz_name))
             else:
                 return None
 
@@ -311,6 +331,26 @@ class ICalendarParser:
         except Exception as e:
             logger.warning(f"Failed to parse datetime {dt_data}: {e}")
             return None
+
+    def _resolve_timezone(self, tz_name: Optional[str]) -> timezone:
+        """将 TZID 名称解析为 timezone 对象，无法识别时 fallback 到 UTC+8"""
+        if not tz_name:
+            return self.beijing_tz
+
+        # 1. 尝试 Windows 时区名映射
+        iana_name = self.WINDOWS_TZ_MAP.get(tz_name)
+        if iana_name:
+            return ZoneInfo(iana_name)
+
+        # 2. 直接尝试作为 IANA 时区名 (如 America/Los_Angeles)
+        try:
+            return ZoneInfo(tz_name)
+        except (KeyError, Exception):
+            pass
+
+        # 3. Fallback: 北京时间
+        logger.warning(f"Unknown TZID '{tz_name}', falling back to UTC+8")
+        return self.beijing_tz
 
     def _parse_organizer(self, organizer_raw: str) -> Tuple[Optional[str], Optional[str]]:
         """解析组织者信息"""

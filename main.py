@@ -29,10 +29,13 @@ class EmailNotionSyncApp:
 
         # 反向同步（Notion -> Mail.app + 飞书通知）
         from src.mail.reverse_sync import NotionToMailSync
+        # Redis 事件启用时，跳过轮询通知（由 Redis handler 负责，避免重复）
+        skip_notify = bool(config.redis_events_enabled and config.redis_url)
         self.reverse_sync = NotionToMailSync(
             notion_sync=self.watcher.notion_sync,
             arm=self.watcher.arm,
-            sync_store=self.watcher.sync_store
+            sync_store=self.watcher.sync_store,
+            skip_notify=skip_notify,
         )
 
         # 事件处理器引用（用于 stats）
