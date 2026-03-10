@@ -491,6 +491,25 @@ CREATE TABLE thread_head_cache (
 | `warning` | 黄色 | dead_letter 累积、雷达不可用、服务停止 |
 | `info` | 蓝色 | 服务启动、恢复通知 |
 
+### 防锁屏保活配置
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `KEEP_ALIVE_ENABLED` | `false` | 是否启用防锁屏保活（集成在 main.py 中） |
+| `KEEP_ALIVE_DIM` | `true` | 保活时是否自动调低屏幕亮度 |
+
+**保活机制：**
+- 非工作时段自动模拟鼠标微移，防止 MDM 锁屏
+- 工作日 9-12, 13-18 自动暂停（用户在工位）
+- 检测到真人操作（鼠标大幅移动 >50px）自动暂停并恢复亮度
+- 空闲超过 3 分钟自动恢复保活
+
+**一键激活（离开工位时使用）：**
+- SIGUSR1 信号切换强制保活：`kill -USR1 $(pm2 pid mail-sync)` 或 `scripts/toggle_keep_alive.sh`
+- 强制模式无视工作时段限制，立即调暗屏幕并保活
+- 移动鼠标自动退出强制模式并恢复亮度
+- macOS 快捷指令绑定：快捷指令 → 运行 Shell 脚本 → `toggle_keep_alive.sh` → 绑定键盘快捷键
+
 ### Webhook Server 看板配置
 
 | 变量 | 默认值 | 说明 |

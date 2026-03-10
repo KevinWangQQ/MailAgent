@@ -1,4 +1,5 @@
 import asyncio
+import os
 import signal
 import sys
 
@@ -129,6 +130,18 @@ class EmailNotionSyncApp:
             if self.alerter:
                 self.stats_reporter.add_collector("alerts", lambda: self.alerter.get_stats())
 
+        # 防锁屏保活
+        self.keep_alive = None
+        if config.keep_alive_enabled:
+            # 添加 scripts/ 到 path 以便导入
+            import sys as _sys
+            scripts_dir = os.path.join(os.path.dirname(__file__), "scripts")
+            if scripts_dir not in _sys.path:
+                _sys.path.insert(0, scripts_dir)
+            from keep_alive import KeepAliveDaemon
+            self.keep_alive = KeepAliveDaemon(dim=config.keep_alive_dim)
+            logger.info(f"Keep-alive configured: dim={config.keep_alive_dim}")
+
         self._shutdown_event = asyncio.Event()
 
     def _handle_signal(self, signum, frame):
@@ -136,6 +149,12 @@ class EmailNotionSyncApp:
         sig_name = signal.Signals(signum).name
         logger.info(f"Received signal {sig_name}, initiating graceful shutdown...")
         self._shutdown_event.set()
+
+    def _handle_toggle_keep_alive(self, signum, frame):
+        """SIGUSR1: 切换保活状态"""
+        if self.keep_alive:
+            self.keep_alive.toggle()
+            logger.info(f"Keep-alive toggled: forced={self.keep_alive.forced}")
 
     async def start(self):
         """启动应用"""
@@ -150,8 +169,15 @@ class EmailNotionSyncApp:
         # 注册信号处理器
         signal.signal(signal.SIGINT, self._handle_signal)
         signal.signal(signal.SIGTERM, self._handle_signal)
+        if self.keep_alive:
+            signal.signal(signal.SIGUSR1, self._handle_toggle_keep_alive)
 
         try:
+            # 启动防锁屏保活
+            if self.keep_alive:
+                self.keep_alive.start()
+                logger.info("Keep-alive daemon started (SIGUSR1 to toggle)")
+
             # 发送启动告警
             if self.alerter:
                 mailboxes = [mb.strip() for mb in config.sync_mailboxes.split(',') if mb.strip()]
@@ -185,6 +211,8 @@ class EmailNotionSyncApp:
 
             # 停止组件
             logger.info("Stopping services...")
+            if self.keep_alive:
+                self.keep_alive.stop()
             await self.watcher.stop()
             if self.redis_consumer:
                 await self.redis_consumer.stop()

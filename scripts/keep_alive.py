@@ -27,6 +27,7 @@ import json
 import ctypes
 import ctypes.util
 import subprocess
+import threading
 from datetime import datetime, timedelta
 
 STATE_FILE = os.path.expanduser("~/.mailagent_keep_alive.json")
@@ -473,6 +474,165 @@ def show_status():
     print(f"当前亮度: {get_brightness()}")
     print(f"系统空闲: {idle:.0f}s")
     print(f"工作时段: {'是' if work else '否'} ({now.strftime('%A %H:%M')})")
+
+
+class KeepAliveDaemon:
+    """可嵌入的保活 daemon，支持线程运行 + 外部 toggle 控制"""
+
+    def __init__(self, dim: bool = False):
+        self.dim = dim
+        self._stop_event = threading.Event()
+        self._force_event = threading.Event()  # 强制激活（无视时间表）
+        self._wake_event = threading.Event()   # 中断 sleep 立即响应
+        self._thread: threading.Thread | None = None
+        self._state = "idle"
+        self._jiggle_count = 0
+
+    @property
+    def active(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
+    @property
+    def forced(self) -> bool:
+        return self._force_event.is_set()
+
+    def start(self):
+        """启动 daemon 线程"""
+        if self.active:
+            return
+        self._stop_event.clear()
+        self._thread = threading.Thread(target=self._run, daemon=True, name="keep-alive")
+        self._thread.start()
+
+    def stop(self):
+        """停止 daemon"""
+        self._stop_event.set()
+        if self._thread:
+            self._thread.join(timeout=10)
+
+    def toggle(self):
+        """切换强制激活状态（SIGUSR1 调用），立即生效"""
+        if self._force_event.is_set():
+            self._force_event.clear()
+            print(f"[keep-alive] 手动关闭强制保活")
+        else:
+            self._force_event.set()
+            print(f"[keep-alive] 手动激活保活（无视时间表）")
+        # 唤醒 sleep 循环，立即响应状态变化
+        self._wake_event.set()
+
+    def get_stats(self) -> dict:
+        return {
+            "active": self.active,
+            "state": self._state,
+            "forced": self.forced,
+            "jiggle_count": self._jiggle_count,
+        }
+
+    def _run(self):
+        original_brightness = get_brightness() if self.dim else None
+        last_pos = _get_mouse_pos()
+        dimmed = False
+        user_pause_until = 0
+
+        self._state = "starting"
+        save_state({
+            "active": True, "mode": "embedded", "pid": os.getpid(),
+            "start": datetime.now().isoformat(), "dim": self.dim,
+        })
+
+        try:
+            while not self._stop_event.is_set():
+                now = datetime.now()
+                forced = self._force_event.is_set()
+                work = is_work_hours(now)
+                idle = get_idle_seconds()
+
+                if self._state in ("starting", "active"):
+                    self._state = "active"
+
+                    # 工作时段且非强制 → 暂停
+                    if work and not forced:
+                        self._state = "paused_work"
+                        if dimmed:
+                            set_brightness(original_brightness or 0.5)
+                            dimmed = False
+                        self._sleep(60)
+                        continue
+
+                    # 真人操作 → 暂停（强制模式下自动退出 forced 并恢复亮度）
+                    if detect_real_user(last_pos):
+                        if forced:
+                            self._force_event.clear()
+                            print("[keep-alive] 检测到用户操作，自动退出强制保活")
+                        self._state = "paused_user"
+                        user_pause_until = time.time() + USER_PAUSE_COOLDOWN
+                        if dimmed:
+                            set_brightness(original_brightness or 0.5)
+                            dimmed = False
+                        last_pos = _get_mouse_pos()
+                        self._sleep(30)
+                        continue
+
+                    # 保活
+                    if self.dim and not dimmed:
+                        set_brightness(0.0)
+                        dimmed = True
+                    jiggle_mouse()
+                    last_pos = _get_mouse_pos()
+                    self._jiggle_count += 1
+
+                    wait = random.randint(120, 300) + random.random() * 30
+                    self._sleep(wait, last_pos)
+
+                elif self._state == "paused_work":
+                    # 强制模式 → 立即激活
+                    if forced:
+                        self._state = "active"
+                        last_pos = _get_mouse_pos()
+                        continue
+                    if not work:
+                        if idle > IDLE_THRESHOLD:
+                            self._state = "active"
+                            continue
+                        else:
+                            self._state = "paused_user"
+                            user_pause_until = time.time() + USER_PAUSE_COOLDOWN
+                    self._sleep(60)
+
+                elif self._state == "paused_user":
+                    # 强制模式 → 立即激活
+                    if forced:
+                        self._state = "active"
+                        last_pos = _get_mouse_pos()
+                        continue
+                    if time.time() > user_pause_until:
+                        if idle > IDLE_THRESHOLD and not work:
+                            self._state = "active"
+                            last_pos = _get_mouse_pos()
+                            continue
+                        elif work:
+                            self._state = "paused_work"
+                        elif idle <= IDLE_THRESHOLD:
+                            user_pause_until = time.time() + USER_PAUSE_COOLDOWN
+                            last_pos = _get_mouse_pos()
+                    self._sleep(30)
+
+        finally:
+            if dimmed and original_brightness is not None and original_brightness > 0:
+                set_brightness(original_brightness)
+            save_state({"active": False, "mode": "embedded"})
+
+    def _sleep(self, seconds: float, check_pos: tuple = None):
+        """可中断的 sleep，响应 stop/wake 事件"""
+        end = time.time() + seconds
+        while time.time() < end and not self._stop_event.is_set():
+            # wake_event 被 toggle() 设置时立即中断
+            if self._wake_event.wait(timeout=min(5, end - time.time())):
+                self._wake_event.clear()
+                return
+            if check_pos and detect_real_user(check_pos):
+                return
 
 
 if __name__ == "__main__":
