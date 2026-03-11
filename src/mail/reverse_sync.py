@@ -219,6 +219,11 @@ class NotionToMailSync:
         ai_action = page.get("ai_action", "")
         ai_priority = page.get("ai_priority", "")
 
+        # 发件箱不通知
+        mailbox = page.get("mailbox", "")
+        if mailbox == "发件箱":
+            return False
+
         # 重要/紧急 且 需要行动
         should_notify = (
             ai_priority in self.NOTIFY_PRIORITIES

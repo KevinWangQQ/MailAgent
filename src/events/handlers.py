@@ -135,9 +135,13 @@ class EventHandlers:
                 self.arm.mark_as_read_by_id(internal_id, True, mailbox)
                 self.sync_store.update_local_flags(internal_id, True, False)
 
-        # 飞书通知：重要/紧急 且 需要行动
+        # 飞书通知：重要/紧急 且 需要行动（发件箱不通知）
         notify_priorities = {"🔴 紧急", "🟡 重要"}
-        should_notify = ai_priority in notify_priorities and ai_action in self.FLAG_ACTIONS
+        should_notify = (
+            ai_priority in notify_priorities
+            and ai_action in self.FLAG_ACTIONS
+            and mailbox != "发件箱"
+        )
         if should_notify and self.feishu:
             # Notion webhook 可能不包含所有 properties，从 SyncStore 补全 subject
             subject = props.get("subject", "")
