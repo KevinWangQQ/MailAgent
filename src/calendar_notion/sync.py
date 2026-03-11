@@ -19,6 +19,17 @@ class CalendarNotionSync:
         self.client = AsyncClient(auth=config.notion_token)
         self.database_id = config.calendar_database_id
         self.description_parser = DescriptionParser()
+        self._ds_id: Optional[str] = None
+
+    async def _get_data_source_id(self) -> str:
+        """获取日历数据库的 data_source_id（带缓存）"""
+        if self._ds_id is None:
+            db = await self.client.databases.retrieve(self.database_id)
+            data_sources = db.get("data_sources", [])
+            if not data_sources:
+                raise ValueError(f"No data sources found for database {self.database_id}")
+            self._ds_id = data_sources[0]["id"]
+        return self._ds_id
 
     async def sync_event(self, event: CalendarEvent) -> Tuple[str, str]:
         """
@@ -78,8 +89,9 @@ class CalendarNotionSync:
     async def _find_existing_event(self, event_id: str) -> Optional[Dict[str, Any]]:
         """根据 Event ID 查找已存在的事件"""
         try:
-            response = await self.client.databases.query(
-                database_id=self.database_id,
+            ds_id = await self._get_data_source_id()
+            response = await self.client.data_sources.query(
+                data_source_id=ds_id,
                 filter={
                     "property": "Event ID",
                     "rich_text": {"equals": event_id}
@@ -153,8 +165,9 @@ class CalendarNotionSync:
         icon = self._get_status_icon(event)
 
         # 构建创建参数（children 为空时不传，避免 Notion API 报错）
+        ds_id = await self._get_data_source_id()
         create_params = {
-            "parent": {"database_id": self.database_id},
+            "parent": {"data_source_id": ds_id},
             "properties": properties,
             "icon": icon
         }

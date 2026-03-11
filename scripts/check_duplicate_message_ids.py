@@ -18,12 +18,16 @@ async def get_all_pages(client: AsyncClient, database_id: str):
     has_more = True
     start_cursor = None
 
+    # Resolve data_source_id
+    db_info = await client.databases.retrieve(database_id)
+    data_source_id = db_info["data_sources"][0]["id"]
+
     while has_more:
-        query_params = {"database_id": database_id, "page_size": 100}
+        query_params = {"data_source_id": data_source_id, "page_size": 100}
         if start_cursor:
             query_params["start_cursor"] = start_cursor
 
-        response = await client.databases.query(**query_params)
+        response = await client.data_sources.query(**query_params)
         all_pages.extend(response.get("results", []))
 
         has_more = response.get("has_more", False)

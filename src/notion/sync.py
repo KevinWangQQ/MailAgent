@@ -584,8 +584,9 @@ class NotionSync:
             return []
 
         try:
-            results = await self.client.client.databases.query(
-                database_id=self.client.email_db_id,
+            ds_id = await self.client.get_data_source_id(self.client.email_db_id)
+            results = await self.client.client.data_sources.query(
+                data_source_id=ds_id,
                 filter={
                     "property": "Thread ID",
                     "rich_text": {"equals": thread_id}
@@ -918,6 +919,7 @@ class NotionSync:
 
         try:
             logger.info("Querying all message IDs from Notion database...")
+            ds_id = await self.client.get_data_source_id(self.client.email_db_id)
 
             filter_conditions = {
                 "property": "Message ID",
@@ -929,7 +931,7 @@ class NotionSync:
 
             while has_more:
                 query_params = {
-                    "database_id": self.client.email_db_id,
+                    "data_source_id": ds_id,
                     "filter": filter_conditions,
                     "page_size": 100
                 }
@@ -937,7 +939,7 @@ class NotionSync:
                 if start_cursor:
                     query_params["start_cursor"] = start_cursor
 
-                results = await self.client.client.databases.query(**query_params)
+                results = await self.client.client.data_sources.query(**query_params)
 
                 for page in results.get("results", []):
                     msg_id_prop = page.get("properties", {}).get("Message ID", {})
@@ -967,6 +969,7 @@ class NotionSync:
 
         try:
             logger.info("Querying all row IDs from Notion database...")
+            ds_id = await self.client.get_data_source_id(self.client.email_db_id)
 
             filter_conditions = {
                 "property": "Row ID",
@@ -978,7 +981,7 @@ class NotionSync:
 
             while has_more:
                 query_params = {
-                    "database_id": self.client.email_db_id,
+                    "data_source_id": ds_id,
                     "filter": filter_conditions,
                     "page_size": 100
                 }
@@ -986,7 +989,7 @@ class NotionSync:
                 if start_cursor:
                     query_params["start_cursor"] = start_cursor
 
-                results = await self.client.client.databases.query(**query_params)
+                results = await self.client.client.data_sources.query(**query_params)
 
                 for page in results.get("results", []):
                     row_id_prop = page.get("properties", {}).get("Row ID", {})
@@ -1018,6 +1021,7 @@ class NotionSync:
 
         try:
             logger.debug("Querying pages for reverse sync...")
+            ds_id = await self.client.get_data_source_id(self.client.email_db_id)
 
             filter_conditions = {
                 "and": [
@@ -1037,7 +1041,7 @@ class NotionSync:
 
             while has_more:
                 query_params = {
-                    "database_id": self.client.email_db_id,
+                    "data_source_id": ds_id,
                     "filter": filter_conditions,
                     "page_size": 100
                 }
@@ -1045,7 +1049,7 @@ class NotionSync:
                 if start_cursor:
                     query_params["start_cursor"] = start_cursor
 
-                results = await self.client.client.databases.query(**query_params)
+                results = await self.client.client.data_sources.query(**query_params)
 
                 for page in results.get("results", []):
                     props = page.get("properties", {})

@@ -701,16 +701,20 @@ class InitialSync:
         start_cursor = None
         query_count = 0
 
+        # Resolve data_source_id
+        _db_info = await self.notion_sync.client.client.databases.retrieve(self.notion_sync.client.email_db_id)
+        _data_source_id = _db_info["data_sources"][0]["id"]
+
         while has_more:
             query_params = {
-                "database_id": self.notion_sync.client.email_db_id,
+                "data_source_id": _data_source_id,
                 "filter": {"property": "Message ID", "rich_text": {"is_not_empty": True}},
                 "page_size": 100
             }
             if start_cursor:
                 query_params["start_cursor"] = start_cursor
 
-            results = await self.notion_sync.client.client.databases.query(**query_params)
+            results = await self.notion_sync.client.client.data_sources.query(**query_params)
             query_count += 1
 
             for page in results.get("results", []):

@@ -32,13 +32,17 @@ async def main():
 
     missing_pages = []
 
+    # Resolve data_source_id
+    db_info = await client.databases.retrieve(config.email_database_id)
+    data_source_id = db_info["data_sources"][0]["id"]
+
     # 查询 Row ID 为空的
     has_more = True
     start_cursor = None
 
     while has_more:
         query_params = {
-            "database_id": config.email_database_id,
+            "data_source_id": data_source_id,
             "filter": {
                 "or": [
                     {"property": "Row ID", "number": {"is_empty": True}},
@@ -50,7 +54,7 @@ async def main():
         if start_cursor:
             query_params["start_cursor"] = start_cursor
 
-        results = await client.databases.query(**query_params)
+        results = await client.data_sources.query(**query_params)
 
         for page in results.get("results", []):
             props = page.get("properties", {})

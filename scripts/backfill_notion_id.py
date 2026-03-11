@@ -109,19 +109,23 @@ async def query_notion_abnormal_pages(notion, database_id: str, threshold: int):
     """
     pages = []
 
+    # Resolve data_source_id
+    db_info = await notion.databases.retrieve(database_id)
+    data_source_id = db_info["data_sources"][0]["id"]
+
     # 查询 1: ID 为空
     print("  [1/2] 查询 ID 为空的页面...")
     has_more = True
     start_cursor = None
     while has_more:
         params = {
-            "database_id": database_id,
+            "data_source_id": data_source_id,
             "filter": {"property": "ID", "number": {"is_empty": True}},
             "page_size": 100
         }
         if start_cursor:
             params["start_cursor"] = start_cursor
-        result = await notion.databases.query(**params)
+        result = await notion.data_sources.query(**params)
         for page in result["results"]:
             page["_issue_type"] = "empty"
         pages.extend(result["results"])
@@ -136,13 +140,13 @@ async def query_notion_abnormal_pages(notion, database_id: str, threshold: int):
     start_cursor = None
     while has_more:
         params = {
-            "database_id": database_id,
+            "data_source_id": data_source_id,
             "filter": {"property": "ID", "number": {"greater_than": threshold}},
             "page_size": 100
         }
         if start_cursor:
             params["start_cursor"] = start_cursor
-        result = await notion.databases.query(**params)
+        result = await notion.data_sources.query(**params)
         for page in result["results"]:
             page["_issue_type"] = "abnormal"
             abnormal_count += 1

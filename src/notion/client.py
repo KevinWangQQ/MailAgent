@@ -31,6 +31,28 @@ class NotionClient:
         self.client = AsyncClient(auth=config.notion_token)
         self.email_db_id = config.email_database_id
         self._http_session: Optional["aiohttp.ClientSession"] = None
+        self._ds_id_cache: Dict[str, str] = {}
+
+    async def get_data_source_id(self, database_id: str) -> str:
+        """从 database_id 解析 data_source_id（带缓存）
+
+        Notion API 2025-09-03 版本要求使用 data_source_id 替代 database_id
+        进行查询和页面创建操作。
+
+        Args:
+            database_id: Notion 数据库 ID
+
+        Returns:
+            对应的 data_source_id
+        """
+        if database_id not in self._ds_id_cache:
+            db = await self.client.databases.retrieve(database_id)
+            data_sources = db.get("data_sources", [])
+            if not data_sources:
+                raise ValueError(f"No data sources found for database {database_id}")
+            self._ds_id_cache[database_id] = data_sources[0]["id"]
+            logger.debug(f"Resolved data_source_id: {database_id} -> {self._ds_id_cache[database_id]}")
+        return self._ds_id_cache[database_id]
 
     async def _get_http_session(self) -> "aiohttp.ClientSession":
         """Get or create a reusable HTTP session for file uploads."""
@@ -63,8 +85,9 @@ class NotionClient:
             创建的 Page 对象
         """
         try:
+            ds_id = await self.get_data_source_id(self.email_db_id)
             page_data = {
-                "parent": {"database_id": self.email_db_id},
+                "parent": {"data_source_id": ds_id},
                 "properties": properties
             }
 
@@ -103,7 +126,8 @@ class NotionClient:
             Exception: 当 raise_on_error=True 且查询失败时
         """
         try:
-            query_params = {"database_id": self.email_db_id}
+            ds_id = await self.get_data_source_id(self.email_db_id)
+            query_params = {"data_source_id": ds_id}
 
             if filter_conditions:
                 query_params["filter"] = filter_conditions
@@ -111,7 +135,7 @@ class NotionClient:
             if sorts:
                 query_params["sorts"] = sorts
 
-            results = await self.client.databases.query(**query_params)
+            results = await self.client.data_sources.query(**query_params)
             return results.get("results", [])
 
         except Exception as e:
@@ -166,7 +190,7 @@ class NotionClient:
 
             notion_headers = {
                 "Authorization": f"Bearer {config.notion_token}",
-                "Notion-Version": "2022-06-28",
+                "Notion-Version": "2025-09-03",
                 "Content-Type": "application/json"
             }
 
