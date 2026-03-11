@@ -126,7 +126,8 @@ class FeishuNotifier:
         cc_addr = page_info.get("cc_addr", "")
 
         notion_url = f"https://notion.so/{page_id.replace('-', '')}" if page_id else ""
-        template = "red" if ai_priority in ("🔴 紧急",) else "orange"
+        template = "red" if ai_priority in ("🔴 紧急",) else \
+                   "orange" if ai_priority in ("🟡 重要",) else "blue"
 
         card = self._build_card(
             subject=subject, sender_display=sender_display,
@@ -163,140 +164,199 @@ class FeishuNotifier:
         template = kw["template"]
         page_id = kw["page_id"]
         message_id = kw["message_id"]
-        row_id = kw["row_id"]
         internal_id = kw.get("internal_id")
         from_email = kw["from_email"]
         to_addr = kw.get("to_addr", "")
         cc_addr = kw.get("cc_addr", "")
         mailbox = kw.get("mailbox", "")
 
-        elements = [
-            {"tag": "markdown", "content": f"**{subject}**"},
-            {
-                "tag": "column_set",
-                "flex_mode": "trisect",
-                "background_style": "grey",
-                "columns": [
-                    {
-                        "tag": "column", "width": "weighted", "weight": 1,
-                        "elements": [{"tag": "markdown", "content": f"**发件人**\n{sender_display}"}]
-                    },
-                    {
-                        "tag": "column", "width": "weighted", "weight": 1,
-                        "elements": [{"tag": "markdown", "content": f"**优先级**\n{ai_priority or 'N/A'}"}]
-                    },
-                    {
-                        "tag": "column", "width": "weighted", "weight": 1,
-                        "elements": [{"tag": "markdown", "content": f"**时间**\n{date_str[:16] if date_str else 'N/A'}"}]
-                    },
-                ]
-            },
-        ]
+        # 日期格式：MM-DD HH:MM（不带年）
+        date_short = "N/A"
+        if date_str and len(date_str) >= 16:
+            date_short = date_str[5:16]  # "MM-DDTHH:MM" -> "MM-DD HH:MM"
+            date_short = date_short.replace("T", " ")
+        elif date_str:
+            date_short = date_str[:10]
+        priority_color = "red" if ai_priority in ("🔴 紧急",) else \
+                         "orange" if ai_priority in ("🟡 重要",) else "blue"
+
+        # --- body elements ---
+        elements = []
 
         if ai_summary:
-            elements.append({"tag": "markdown", "content": f"**📝 概要**\n{ai_summary[:300]}"})
+            elements.append({"tag": "markdown", "content": f"📝 **概要**\n{ai_summary[:300]}"})
 
-        if reply_suggestion:
-            if len(reply_suggestion) > 150:
-                elements.append({
-                    "tag": "collapsible_panel",
-                    "expanded": False,
-                    "header": {"title": {"tag": "plain_text", "content": "💡 建议回复（点击展开）"}},
-                    "elements": [{"tag": "markdown", "content": reply_suggestion[:800]}]
-                })
-            else:
-                elements.append({"tag": "markdown", "content": f"**💡 建议回复**\n{reply_suggestion}"})
-
-        elements.append({"tag": "hr"})
-
-        # 完整信息折叠面板
-        info_data = {
-            "internal_id": internal_id, "page_id": page_id,
-            "database_id": self._database_id, "message_id": message_id,
-            "subject": subject, "from": sender_display, "from_email": from_email,
-            "to": to_addr, "cc": cc_addr,
-            "date": date_str, "mailbox": mailbox,
-            "action": ai_action, "priority": ai_priority, "category": category,
-            "summary": ai_summary[:200] if ai_summary else "",
-            "reply_suggestion": reply_suggestion[:300] if reply_suggestion else "",
-            "notion_url": notion_url,
-        }
-        info_json = json.dumps(info_data, ensure_ascii=False, indent=2)
-
-        elements.append({
-            "tag": "collapsible_panel",
-            "expanded": False,
-            "header": {"title": {"tag": "plain_text", "content": "📋 完整信息（点击展开复制）"}},
-            "elements": [{"tag": "markdown", "content": f"```json\n{info_json}\n```"}]
-        })
-
-        # 按钮行
-        actions = []
-        if notion_url:
-            actions.append({
-                "tag": "button",
-                "text": {"content": "📬 打开邮件", "tag": "plain_text"},
-                "type": "default",
-                "url": notion_url
-            })
-
-        # 按钮回调公共字段
-        base_callback = {
+        # 回调元数据（reply_suggestion 已是独立 form input，不占 metadata 空间）
+        # 飞书回调自带 open_message_id 和 open_chat_id，无需传递
+        metadata = {
             "internal_id": internal_id, "page_id": page_id,
             "database_id": self._database_id,
-            "message_id": message_id, "notion_url": notion_url,
-            "subject": subject, "mailbox": mailbox,
+            "message_id": message_id,
+            "subject": subject[:100], "mailbox": mailbox,
             "from_email": from_email, "from_name": sender_display,
-            "to": to_addr, "cc": cc_addr,
+            "to": to_addr[:200], "cc": cc_addr[:200],
             "date": date_str, "category": category,
             "chat_id": self.chat_id,
             "ai_action": ai_action, "ai_priority": ai_priority,
+            "notion_url": notion_url,
         }
-        actions.append({
-            "tag": "button",
-            "text": {"content": "✨ 优化回复", "tag": "plain_text"},
-            "type": "primary",
-            "value": {**base_callback, "action": "enhance_reply",
-                      "ai_summary": (ai_summary or "")[:500],
-                      "reply_suggestion": (reply_suggestion or "")[:1500]}
-        })
+        metadata_json = json.dumps(metadata, ensure_ascii=False)
 
+        # form: 建议回复(可编辑) + 修改意见 + 附加收件人 + 元数据 + 按钮
+        form_elements = []
+
+        # 建议回复：可编辑 input，用户可直接微调后点创建草稿
+        # 提交时自动在 form_value.reply_suggestion 中
         if reply_suggestion:
-            actions.append({
-                "tag": "button",
-                "text": {"content": "📝 创建草稿", "tag": "plain_text"},
-                "type": "default",
-                "value": {**base_callback, "action": "create_draft",
-                          "reply_suggestion": reply_suggestion[:1500]}
+            form_elements.append({
+                "tag": "input",
+                "name": "reply_suggestion",
+                "input_type": "multiline_text",
+                "default_value": reply_suggestion[:1500],
+                "label": {"tag": "plain_text", "content": "✍️ 建议回复（可直接编辑）"},
+                "label_position": "top",
+                "rows": 4,
+                "auto_resize": True,
+                "max_rows": 20,
+                "width": "fill",
             })
 
-        actions.append({
-            "tag": "button",
-            "text": {"content": "✅ 已完成", "tag": "plain_text"},
-            "type": "default",
-            "value": {**base_callback, "action": "mark_completed"}
+        # 修改意见输入框（用于 AI 优化回复）
+        form_elements.append({
+            "tag": "input",
+            "name": "user_feedback",
+            "placeholder": {"tag": "plain_text", "content": "输入修改意见（如：语气正式一些、补充提到 Q1 进展、改为拒绝...）"},
+            "input_type": "multiline_text",
+            "max_length": 1000,
+            "label": {"tag": "plain_text", "content": "✏️ 修改意见（AI 优化用，可选）"},
+            "label_position": "top",
+            "rows": 2,
+            "auto_resize": True,
+            "max_rows": 10,
+            "width": "fill",
         })
 
-        if actions:
-            elements.append({"tag": "action", "actions": actions})
+        # 附加收件人 + 元数据：折叠隐藏
+        form_elements.append({
+            "tag": "collapsible_panel",
+            "expanded": False,
+            "header": {"title": {"tag": "plain_text", "content": "📋 更多选项"}},
+            "elements": [
+                {
+                    "tag": "input",
+                    "name": "extra_to",
+                    "input_type": "text",
+                    "placeholder": {"tag": "plain_text", "content": "追加收件人邮箱（逗号分隔）"},
+                    "label": {"tag": "plain_text", "content": "➕ 附加收件人"},
+                    "label_position": "top",
+                    "width": "fill",
+                },
+                {
+                    "tag": "input",
+                    "name": "extra_cc",
+                    "input_type": "text",
+                    "placeholder": {"tag": "plain_text", "content": "追加抄送邮箱（逗号分隔）"},
+                    "label": {"tag": "plain_text", "content": "➕ 附加抄送"},
+                    "label_position": "top",
+                    "width": "fill",
+                },
+                {
+                    "tag": "input",
+                    "name": "metadata",
+                    "input_type": "multiline_text",
+                    "default_value": metadata_json,
+                    "label": {"tag": "plain_text", "content": "元数据（请勿修改）"},
+                    "label_position": "top",
+                    "rows": 1,
+                    "width": "fill",
+                    "disabled": True,
+                },
+            ],
+        })
 
-        # 构建标题: "action - from - subject"，截断到 40 字符
-        title_parts = [ai_action or "需要处理", sender_display]
-        title_base = " - ".join(title_parts)
-        max_subject_len = 40 - len(title_base) - 3  # 3 for " - "
-        if max_subject_len > 5:
-            subj_short = subject[:max_subject_len] + ("..." if len(subject) > max_subject_len else "")
-            card_title = f"{title_base} - {subj_short}"
-        else:
-            card_title = title_base[:40]
+        # 按钮列（通过 action.name 区分动作：btn_enhance / btn_draft / btn_done）
+        btn_columns = [
+            {
+                "tag": "column", "width": "auto",
+                "elements": [{
+                    "tag": "button",
+                    "text": {"content": "✨ 优化回复", "tag": "plain_text"},
+                    "type": "primary",
+                    "form_action_type": "submit",
+                    "name": "btn_enhance",
+                }],
+            },
+        ]
+
+        if reply_suggestion:
+            btn_columns.append({
+                "tag": "column", "width": "auto",
+                "elements": [{
+                    "tag": "button",
+                    "text": {"content": "📝 创建草稿", "tag": "plain_text"},
+                    "type": "default",
+                    "form_action_type": "submit",
+                    "name": "btn_draft",
+                }],
+            })
+
+        btn_columns.append({
+            "tag": "column", "width": "auto",
+            "elements": [{
+                "tag": "button",
+                "text": {"content": "✅ 已完成", "tag": "plain_text"},
+                "type": "default",
+                "form_action_type": "submit",
+                "name": "btn_done",
+            }],
+        })
+
+        if notion_url:
+            btn_columns.append({
+                "tag": "column", "width": "auto",
+                "elements": [{
+                    "tag": "button",
+                    "text": {"content": "📬 打开邮件", "tag": "plain_text"},
+                    "type": "default",
+                    "multi_url": {"url": notion_url},
+                }],
+            })
+
+        form_elements.append({
+            "tag": "column_set",
+            "flex_mode": "none",
+            "columns": btn_columns,
+        })
+
+        elements.append({
+            "tag": "form",
+            "name": "mail_form",
+            "elements": form_elements,
+        })
+
+        # --- header ---
+        subtitle_parts = [sender_display, date_short, ai_priority or "一般"]
+        subtitle_right = " · ".join(filter(None, [mailbox, category]))
+        subtitle = " · ".join(subtitle_parts)
+        if subtitle_right:
+            subtitle += f" | {subtitle_right}"
 
         return {
-            "config": {"update_multi": True},
+            "schema": "2.0",
+            "config": {"width_mode": "fill", "update_multi": True},
             "header": {
-                "title": {"content": f"📬 {card_title}", "tag": "plain_text"},
+                "title": {"content": f"📬「{ai_action or '需要处理'}」{subject[:50]}", "tag": "plain_text"},
+                "subtitle": {"content": subtitle, "tag": "plain_text"},
                 "template": template,
+                "text_tag_list": [
+                    {"tag": "text_tag", "text": {"tag": "plain_text", "content": ai_priority or "一般"}, "color": priority_color}
+                ],
             },
-            "elements": elements,
+            "body": {
+                "direction": "vertical",
+                "vertical_spacing": "4px",
+                "elements": elements,
+            },
         }
 
     async def _send_via_app_api(self, card: Dict, subject: str) -> bool:
@@ -345,12 +405,20 @@ class FeishuNotifier:
 
     @staticmethod
     def _inject_open_message_id(card: Dict, msg_id: str):
-        """将 open_message_id 注入所有按钮 value"""
-        for el in card.get("elements", []):
-            if el.get("tag") == "action":
-                for btn in el.get("actions", []):
-                    if isinstance(btn.get("value"), dict):
-                        btn["value"]["open_message_id"] = msg_id
+        """将 open_message_id 注入 metadata input 的 default_value JSON 中"""
+        body_elements = card.get("body", {}).get("elements", [])
+        for el in body_elements:
+            if el.get("tag") == "form":
+                for form_el in el.get("elements", []):
+                    if form_el.get("tag") == "collapsible_panel":
+                        for panel_el in form_el.get("elements", []):
+                            if panel_el.get("tag") == "input" and panel_el.get("name") == "metadata":
+                                try:
+                                    meta = json.loads(panel_el.get("default_value", "{}"))
+                                    meta["open_message_id"] = msg_id
+                                    panel_el["default_value"] = json.dumps(meta, ensure_ascii=False)
+                                except (json.JSONDecodeError, TypeError):
+                                    pass
 
     async def _send_via_webhook(self, card: Dict, subject: str) -> bool:
         """Webhook fallback"""

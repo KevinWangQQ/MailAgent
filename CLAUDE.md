@@ -140,7 +140,7 @@ tail -f logs/sync.log
 
 | 模块 | 职责 |
 |------|------|
-| `feishu.py` | 飞书应用机器人通知（App Bot API + 交互式卡片按钮回调 Openclaw） |
+| `feishu.py` | 飞书应用机器人通知（App Bot API + Card 2.0 form 交互：可编辑回复、修改意见、附加收件人/抄送，回调 Openclaw） |
 | `alert.py` | 飞书告警机器人（群聊 Webhook Bot，可配置级别/冷却/卡片样式） |
 
 #### 监控模块 (`src/`)
