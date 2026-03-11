@@ -41,6 +41,9 @@ class FeishuNotifier:
         self._token: str = ""
         self._token_expire: float = 0
         self._use_app_api = bool(app_id and app_secret and chat_id)
+        # 去重：记录最近已通知的 page_id -> timestamp，防止双路径重复通知
+        self._notified_pages: Dict[str, float] = {}
+        self._dedup_ttl = 600  # 10 分钟内同一 page_id 不重复通知
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
@@ -92,7 +95,21 @@ class FeishuNotifier:
             logger.debug(f"Skipping notification for old email: {page_info.get('subject', '')[:40]}")
             return False
 
-        subject = page_info.get("subject", "(No Subject)")
+        # 去重：同一 page_id 短时间内不重复通知
+        page_id = page_info.get("page_id", "")
+        if page_id:
+            now = time.time()
+            # 清理过期条目
+            self._notified_pages = {
+                k: v for k, v in self._notified_pages.items()
+                if now - v < self._dedup_ttl
+            }
+            if page_id in self._notified_pages:
+                logger.info(f"Skipping duplicate notification for {page_id[:15]}, "
+                            f"last notified {now - self._notified_pages[page_id]:.0f}s ago")
+                return False
+
+        subject = page_info.get("subject") or "(No Subject)"
         from_name = page_info.get("from_name", "")
         from_email = page_info.get("from_email", "")
         sender_display = from_name or from_email or "Unknown"
@@ -125,8 +142,13 @@ class FeishuNotifier:
         )
 
         if self._use_app_api:
-            return await self._send_via_app_api(card, subject)
-        return await self._send_via_webhook(card, subject)
+            ok = await self._send_via_app_api(card, subject)
+        else:
+            ok = await self._send_via_webhook(card, subject)
+
+        if ok and page_id:
+            self._notified_pages[page_id] = time.time()
+        return ok
 
     def _build_card(self, **kw) -> Dict:
         subject = kw["subject"]

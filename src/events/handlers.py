@@ -119,6 +119,7 @@ class EventHandlers:
 
         # 查找 internal_id
         internal_id = None
+        record = None
         if message_id and self.sync_store:
             record = self.sync_store.get_by_message_id(message_id)
             if record:
@@ -138,12 +139,17 @@ class EventHandlers:
         notify_priorities = {"🔴 紧急", "🟡 重要"}
         should_notify = ai_priority in notify_priorities and ai_action in self.FLAG_ACTIONS
         if should_notify and self.feishu:
+            # Notion webhook 可能不包含所有 properties，从 SyncStore 补全 subject
+            subject = props.get("subject", "")
+            if not subject and record:
+                subject = (record.get('subject') if isinstance(record, dict)
+                           else getattr(record, 'subject', '')) or ''
             self._stats["feishu_notified"] += 1
             await self.feishu.notify_important_email({
                 "page_id": page_id,
                 "message_id": message_id,
                 "internal_id": internal_id,
-                "subject": props.get("subject", ""),
+                "subject": subject,
                 "from_name": props.get("from_name", ""),
                 "from_email": props.get("from_email", ""),
                 "to_addr": props.get("to_addr", ""),

@@ -16,6 +16,9 @@ from loguru import logger
 class RedisConsumer:
     """Redis 队列消费者"""
 
+    RECONNECT_BASE = 5       # 初始重连间隔（秒）
+    RECONNECT_MAX = 120      # 最大重连间隔（秒）
+
     def __init__(
         self,
         redis_url: str,
@@ -31,6 +34,7 @@ class RedisConsumer:
         self._running = False
         self._handlers: Dict[str, Callable[[Dict], Awaitable[None]]] = {}
         self._stats = {"received": 0, "processed": 0, "errors": 0}
+        self._consecutive_failures = 0
 
     def on(self, event_type: str, handler: Callable[[Dict], Awaitable[None]]):
         """注册事件处理器
@@ -41,12 +45,26 @@ class RedisConsumer:
         """
         self._handlers[event_type] = handler
 
-    async def start(self, shutdown_event: asyncio.Event = None):
-        """启动消费循环"""
+    async def _ensure_connection(self):
+        """重建 Redis 连接"""
+        try:
+            if self._pool:
+                await self._pool.close()
+        except Exception:
+            pass
         self._pool = redis.from_url(
             f"{self.redis_url}/{self.redis_db}",
             decode_responses=True
         )
+
+    def _get_reconnect_delay(self) -> float:
+        """指数退避重连间隔"""
+        delay = min(self.RECONNECT_BASE * (2 ** self._consecutive_failures), self.RECONNECT_MAX)
+        return delay
+
+    async def start(self, shutdown_event: asyncio.Event = None):
+        """启动消费循环"""
+        await self._ensure_connection()
         self._running = True
         logger.info(f"Redis consumer started: queue={self.queue_key}")
 
@@ -57,7 +75,16 @@ class RedisConsumer:
             try:
                 result = await self._pool.blpop(self.queue_key, timeout=self.blpop_timeout)
                 if result is None:
+                    # 连接正常，重置失败计数
+                    if self._consecutive_failures > 0:
+                        logger.info(f"Redis connection restored after {self._consecutive_failures} failures")
+                        self._consecutive_failures = 0
                     continue
+
+                # 连接正常，重置失败计数
+                if self._consecutive_failures > 0:
+                    logger.info(f"Redis connection restored after {self._consecutive_failures} failures")
+                    self._consecutive_failures = 0
 
                 _, raw_message = result
                 self._stats["received"] += 1
@@ -79,14 +106,35 @@ class RedisConsumer:
 
             except asyncio.CancelledError:
                 break
-            except redis.ConnectionError as e:
-                logger.error(f"Redis connection lost: {e}, reconnecting in 5s...")
+            except (redis.ConnectionError, redis.TimeoutError, ConnectionError, OSError) as e:
+                self._consecutive_failures += 1
+                delay = self._get_reconnect_delay()
+                logger.error(
+                    f"Redis connection error ({self._consecutive_failures}x): {e}, "
+                    f"reconnecting in {delay:.0f}s..."
+                )
                 self._stats["errors"] += 1
-                await asyncio.sleep(5)
+                await asyncio.sleep(delay)
+                # 重建连接
+                try:
+                    await self._ensure_connection()
+                    logger.info("Redis connection rebuilt, resuming consumer...")
+                except Exception as re_err:
+                    logger.error(f"Redis reconnect failed: {re_err}")
             except Exception as e:
-                logger.error(f"Consumer error: {e}")
+                self._consecutive_failures += 1
+                delay = self._get_reconnect_delay()
+                logger.error(
+                    f"Consumer error ({self._consecutive_failures}x): {e}, "
+                    f"retrying in {delay:.0f}s..."
+                )
                 self._stats["errors"] += 1
-                await asyncio.sleep(1)
+                await asyncio.sleep(delay)
+                # 非连接错误也尝试重建，防止连接对象损坏
+                try:
+                    await self._ensure_connection()
+                except Exception:
+                    pass
 
         logger.info("Redis consumer stopped")
 
