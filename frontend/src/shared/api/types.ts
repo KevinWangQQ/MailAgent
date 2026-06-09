@@ -374,7 +374,7 @@ export interface EmailApi {
   flag(internalId: number | null, opts: EmailFlagOpts): Promise<unknown>
   /** 归档收件箱邮件: CLI `email archive` 做 IMAP MOVE INBOX→Archive + SQLite/Notion
    *  Mailbox→存档 (davmail-only)。成功后 renderer 失效 emails/email 查询, 邮件移出收件箱
-   *  视图; Archive 副本由 FolderSyncWorker 进 folder_email, /archive 视图可见。
+   *  视图 (Archive 副本留在 Exchange 端; 若 Archive 在 SYNC_FOLDERS 白名单则走主链路可见)。
    *  返回 CLI data 块 {success, from_mailbox, to_mailbox, notion_updated} 或抛 Error&{code}。 */
   archive(internalId: number): Promise<unknown>
 }
@@ -436,113 +436,92 @@ export interface JobsApi {
   get(jobId: number): Promise<JobRecord>
 }
 
-// ---- Phase C — 存档 / 草稿箱 folder surface --------------------------------
+// ---- 多文件夹同步 (P3) — discover + whitelist (davmail-only) ----------------
 //
-// 独立于 email_metadata 的 `folder_email` 表 (DB v17). 读 (list/get/search/
-// syncStatus) 走 Electron main handler 的 better-sqlite3 直读 (~5ms); 写
-// (sync-now / delete / move / send-draft / create-draft / edit-draft) fork
-// `mailagent folder <cmd>` CLI (davmail-only). 写方法跟 calendar 写方法一致,
-// 返回 unwrap 后的 CLI `data` (失败时 ElectronApi 抛带 code 的 Error)。
+// serve-api `GET /api/folder/discover` / `GET|PUT /api/folder/whitelist` 的 wire
+// 形状 (src/api/routers/folder.py + src/mail/backend/imap_client.FolderInfo)。
+// 白名单存 IMAP 原始名 (modified-UTF7 ASCII, 可能含逗号如 `&W,mL3VOGU,KLsF9V-`);
+// display_name 是解码后中文, 仅展示。勾选用 imap_name 作 key, 展示用 display_name。
+// 远程 (HttpApi 直连) + 本地 (Electron→daemon→serve-api 转发) 同一 wire。
 
-export type FolderName = 'archive' | 'drafts'
-
-export interface FolderAttachmentMeta {
-  filename: string
-  size: number
-  content_type: string
+/** 单个 Exchange 文件夹 (LIST → FolderInfo)。flat 列表带 `is_synced`; tree 节点
+ *  额外带 `children` 但不带 `is_synced` (后端 build_folder_tree 用 bare to_dict)。 */
+export interface FolderInfo {
+  imap_name: string
+  display_name: string
+  delimiter: string
+  special_use: string | null
+  is_system: boolean
+  has_children: boolean
+  parent: string | null
+  message_count: number | null
+  /** 仅 discover 的 flat 列表带此字段 (= imap_name ∈ 当前白名单)。 */
+  is_synced?: boolean
 }
 
-/** 列表项 — 不含正文 (body_html/body_markdown). */
-export interface FolderEmailMeta {
-  id: number
-  folder: FolderName
-  imap_uid: number
-  imap_uidvalidity: number
-  message_id: string | null
-  thread_id: string | null
-  subject: string
-  sender: string
-  sender_name: string | null
-  to_addr: string
-  cc_addr: string
-  date_received: string | null
-  is_flagged: boolean
-  has_attachments: boolean
-  snippet: string | null
-  attachments: FolderAttachmentMeta[]
+/** 嵌套树节点 = FolderInfo + children。 */
+export interface FolderTreeNode extends FolderInfo {
+  children: FolderTreeNode[]
 }
 
-/** 详情 — 列表项 + 正文. */
-export interface FolderEmailDetail extends FolderEmailMeta {
-  body_html: string | null
-  body_markdown: string | null
+export interface FolderDiscoverResult {
+  folders: FolderInfo[]
+  tree: FolderTreeNode[]
+  /** 当前已同步的 imap_name 列表 (= SYNC_FOLDERS 白名单, 已排序)。 */
+  whitelist: string[]
 }
 
-/** folder_sync_state 表行 (sync-status 输出). */
-export interface FolderSyncStateItem {
-  folder: string
-  imap_uidvalidity: number | null
-  last_uidnext: number | null
-  last_full_sync_at: number | null
-  last_incremental_sync_at: number | null
-  last_error: string | null
+export interface FolderWhitelistResult {
+  folders: string[]
 }
 
-export interface FolderListOpts {
-  folder: FolderName
-  limit?: number
-  offset?: number
+export interface FolderSetWhitelistResult {
+  folders: string[]
+  restart_required: boolean
 }
 
-export interface FolderSearchOpts {
-  query: string
-  folder?: FolderName
-  /** Default false → CJK-aware smart 改写; true → 原样 FTS5 passthrough. */
-  raw?: boolean
-  limit?: number
+// 多文件夹同步 (P4) — 文件夹管理 (新建/重命名/删除)。serve-api
+// `POST|PATCH|DELETE /api/folder/manage` 的 wire (davmail-only, 回写真实 Exchange
+// + 本地副本)。失败时后端把本地树回滚到服务器真实状态, 前端 refetch discover。
+export interface FolderManageResult {
+  /** 操作影响后的 imap_name (新建 = 新文件夹名; 重命名 = 新名; 删除 = 已删名)。 */
+  imap_name: string
+  /** 删除/重命名牵动了白名单时为 true → 前端标记需重启同步服务。 */
+  restart_required?: boolean
 }
 
-export interface FolderSearchResult {
-  query: string
-  transformed_query: string | null
-  total_hits: number
-  hits: FolderEmailMeta[]
-}
-
-export interface FolderSyncStatusResult {
-  states: FolderSyncStateItem[]
-  counts: Record<string, number>
-}
-
-export interface FolderCreateDraftOpts {
-  to: string
-  cc?: string
-  subject?: string
-  html: string
-}
-
-export interface FolderEditDraftOpts {
-  id: number
-  html: string
-  to?: string
-  cc?: string
-  subject?: string
+// 多文件夹同步 (P5) — 本地副本清理。serve-api `POST /api/folder/cleanup`
+// body `{imap_name}` → 仅删本地已同步邮件 (email_metadata 级联 body/附件/FTS +
+// 从白名单移除)。**不碰 Exchange 文件夹/邮件**, 非 davmail 也可 (纯本地操作)。
+export interface FolderCleanupResult {
+  /** 被清理的文件夹 imap_name。 */
+  imap_name: string
+  /** 实际删除的本地行数。 */
+  affected_local_rows: number
+  /** true → 白名单已变动, 需重启同步服务。 */
+  restart_required: boolean
 }
 
 export interface FolderApi {
-  // 读 (无 auth, better-sqlite3 直读)
-  list(opts: FolderListOpts): Promise<FolderEmailMeta[]>
-  get(id: number): Promise<FolderEmailDetail | null>
-  search(opts: FolderSearchOpts): Promise<FolderSearchResult>
-  syncStatus(): Promise<FolderSyncStatusResult>
-  // 写 (needsAuth + davmail-only, fork CLI). 返回 unwrap 后的 CLI data,
-  // 失败抛带 `code` 的 Error (同 calendar 写方法约定)。
-  syncNow(folder: FolderName, full?: boolean): Promise<unknown>
-  deleteMsg(id: number): Promise<unknown>
-  move(id: number, to?: string): Promise<unknown>
-  sendDraft(id: number): Promise<unknown>
-  createDraft(opts: FolderCreateDraftOpts): Promise<unknown>
-  editDraft(opts: FolderEditDraftOpts): Promise<unknown>
+  // 多文件夹同步 (P3, davmail-only). discover 走 serve-api (IMAP LIST); 本地经
+  // daemon 转发, 远程 HttpApi 直连。非 davmail 后端 serve-api 返回 400
+  // E_INVALID_ARG → 抛带 code 的 Error (前端据此 gate)。
+  discover(opts?: { counts?: boolean }): Promise<FolderDiscoverResult>
+  getWhitelist(): Promise<FolderWhitelistResult>
+  /** 覆盖式保存白名单 (imap 原始名)。返回去重排序后的列表 + restart_required。 */
+  setWhitelist(imapNames: string[]): Promise<FolderSetWhitelistResult>
+  // 文件夹管理 (P4, davmail-only). serve-api POST/PATCH/DELETE /api/folder/manage,
+  // 回写真实 Exchange (新建 IMAP CREATE / 重命名 RENAME / 删除 DELETE + 清本地副本)。
+  // 失败抛带 `code` 的 Error (本地树由后端回滚到服务器真实状态, 前端 refetch discover)。
+  /** 在 parentImapName 下新建子文件夹 name (顶层 = parentImapName 传 null)。 */
+  createFolder(parentImapName: string | null, name: string): Promise<FolderManageResult>
+  /** 重命名 imapName → newName (叶子名, 后端拼父路径)。 */
+  renameFolder(imapName: string, newName: string): Promise<FolderManageResult>
+  /** 删除 imapName (含 Exchange 文件夹 + 本地已同步副本, 不可撤销)。 */
+  deleteFolder(imapName: string): Promise<FolderManageResult>
+  // 本地副本清理 (P5) — 仅删本地已同步邮件, 不碰 Exchange (非 davmail 也可)。
+  /** 清理 imapName 对应的本地已同步邮件副本 + 从白名单移除; **不操作 Exchange**。 */
+  cleanup(imapName: string): Promise<FolderCleanupResult>
 }
 
 // ---- Sprint 6 §2.2 — LLM dashboard surface --------------------------------
@@ -2007,7 +1986,7 @@ export interface MailApi {
   email: EmailApi
   /** D2b — async_jobs 长任务查询 (batch resync 进度轮询; backfill UI 未来复用)。 */
   jobs: JobsApi
-  /** Phase C — 存档 / 草稿箱 folder_email 表 (DB v17). */
+  /** 多文件夹同步管理: folder discover / whitelist / 文件夹 CRUD / cleanup (davmail-only)。 */
   folder: FolderApi
   attachment: AttachmentApi
   ai: AiApi

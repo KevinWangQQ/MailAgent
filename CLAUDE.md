@@ -69,6 +69,7 @@
 | `NOTION_READ_FROM_SQLITE` | `false` | v4 Phase 4 灰度；切 true 后 sync/resync 走 SQLite SSoT，miss fallback |
 | `LLM_AGENT_ENABLED` | `false` | 本地 LLM 分类总开关（启用前必看 llm-agent.md 防双跑） |
 | `CALENDAR_CALDAV_SYNC_ENABLED` | `false` | CalendarSyncWorker 总开关 |
+| `SYNC_FOLDERS` | `[]`（空） | 多文件夹同步白名单（JSON 数组的 imap_name，davmail-only）；空=零激活=逐字节同现状；勾选的自定义 Exchange 文件夹走 `email_metadata` 主链路（AI/Notion/FTS/线程/写操作全等同收件箱）。配套 `FOLDER_NOTIFY_ENABLED`（自定义文件夹默认不推飞书，JSON 白名单 opt-in）/ `FOLDER_LLM_DISABLED`（默认全跑 LLM，JSON 黑名单可关）/ `FOLDER_SYNC_PAST_DAYS`(90) / `FOLDER_SYNC_MAX_MESSAGES`(2000)。详见 architecture-internals.md「多文件夹同步」 |
 | `PROJECT_PROGRESS_SYNC_ENABLED` | `false` | 项目周报 CLI + 钩子总开关 |
 | `MAILAGENT_AGENT_HARNESS` | `false` | 前端 chat 多轮 agent（M1 已 ship 未 dogfood） |
 | `MAILAGENT_KOS_INGEST_ENABLED` / `_CONSUMER_ENABLED` / `_L1_HOT_BLOCK_ENABLED` | `false` | KOS 集成三层，全默认 OFF |
@@ -108,7 +109,7 @@ tail -f logs/sync.log
 
 一体化 Electron 前端 + 内嵌 CPython 后端 → 单个 macOS `.app`。**全部在 `main` 上做**（前端是 `frontend/` 子目录，非独立 repo/submodule；打包/onboarding/auto-update 已全合入 main，feature 分支已删）。完整 runbook → [`docs/claude/packaging-release.md`](./docs/claude/packaging-release.md)。
 
-- **版本 SSoT** = `frontend/package.json` 的 `version`（electron-builder 据此写 `Info.plist` + 产物名 + auto-update feed `latest-mac.yml`）。流程：bump version → build → 装机验证 → `git tag -a vX.Y.Z`。semver：`0.1.0`=首个 beta，bug 修复走 patch。已发 `v0.1.0/0.1.1/0.1.2`（本地未推送）。**🔴 勿改 package.json `name`（`mailagent-frontend`）**—— 它决定 userData 目录 `~/Library/Application Support/mailagent-frontend/`，改了已装用户数据/`.env` 易主。
+- **版本 SSoT** = `frontend/package.json` 的 `version`（electron-builder 据此写 `Info.plist` + 产物名 + auto-update feed `latest-mac.yml`）。流程：bump version → build → 装机验证 → `git tag -a vX.Y.Z`。semver：`0.1.0`=首个 beta，bug 修复走 patch。已发至 **v0.5.0**（GitHub Releases published + 完整 feed 产物，对外发布流程=`pnpm build:mac` → push main+tag → `gh release create` 传 5 件产物：latest-mac.yml + zip/dmg + 各自 blockmap）。**🔴 勿改 package.json `name`（`mailagent-frontend`）**—— 它决定 userData 目录 `~/Library/Application Support/mailagent-frontend/`，改了已装用户数据/`.env` 易主。
 - **前置**（`frontend/` 下，均 gitignored 本地产物）：`node_modules`（`pnpm install`）+ `resources/python`（`bash scripts/build-python-venv.sh`，~200M 可重定位嵌入式 CPython；本机已 provision，换机/新 clone 必先跑）。
 - **构建**：本地装用 `pnpm run build && npx electron-builder --dir --arm64`（只出 `.app`，避开 flaky 的 dmg）；完整 feed 产物（dmg+zip+blockmap+latest-mac.yml）用 `pnpm build:mac`。**🔴 要含远程 web（`mail.chenge.ink/app`）必先 `pnpm build:web`**（出 `out/web` → electron-builder `from: out/web` 打进 `.app/Resources/web` → serve-api 经 `MAILAGENT_SPA_DIR` mount `/app`）；`pnpm run build` **不含** web SPA，漏跑则远程根 `/` 返 `{"detail":"Not Found"}`（`build:mac` 已含 `build:web`，仅 `--dir` 装机路径需手动补 `pnpm build:web &&`）。
 - **🔴 头号坑①（python）**：`resources/python` 缺失 → afterPack（`scripts/afterPack.cjs`）**跳过整个签名** → `.app` 无后端 + `codesign` FAIL。build 前必确认它在。

@@ -59,15 +59,11 @@ import type {
   EmailMeta,
   EnrichedEmailMeta,
   FolderApi,
-  FolderCreateDraftOpts,
-  FolderEditDraftOpts,
-  FolderEmailDetail,
-  FolderEmailMeta,
-  FolderListOpts,
-  FolderName,
-  FolderSearchOpts,
-  FolderSearchResult,
-  FolderSyncStatusResult,
+  FolderCleanupResult,
+  FolderDiscoverResult,
+  FolderManageResult,
+  FolderSetWhitelistResult,
+  FolderWhitelistResult,
   EnvApi,
   EnvSetResult,
   EnvSnapshot,
@@ -303,42 +299,50 @@ class ElectronEmailApi implements EmailApi {
 }
 
 class ElectronFolderApi implements FolderApi {
-  // Reads — better-sqlite3 直读, no envelope (mirrors ElectronEmailApi reads)
-  async list(opts: FolderListOpts): Promise<FolderEmailMeta[]> {
-    return (await invoker()('folder:list', opts)) as FolderEmailMeta[]
-  }
-  async get(id: number): Promise<FolderEmailDetail | null> {
-    return (await invoker()('folder:get', id)) as FolderEmailDetail | null
-  }
-  async search(opts: FolderSearchOpts): Promise<FolderSearchResult> {
-    return (await invoker()('folder:search', opts)) as FolderSearchResult
-  }
-  async syncStatus(): Promise<FolderSyncStatusResult> {
-    return (await invoker()('folder:syncStatus')) as FolderSyncStatusResult
-  }
-  // Writes — envelope → unwrap (mirrors ElectronCalendarApi write methods)
-  async syncNow(folder: FolderName, full?: boolean): Promise<unknown> {
-    const env = (await invoker()('folder:syncNow', folder, full)) as WriteEnvelope<unknown>
+  // 多文件夹同步 (P3) — discover/whitelist 走 Main→daemon→serve-api 转发 (D1)。
+  // 用 envelope 形态过 IPC 边界以保住 error.code (非 davmail → E_INVALID_ARG, 给
+  // FolderPicker 门控)。
+  async discover(opts?: { counts?: boolean }): Promise<FolderDiscoverResult> {
+    const env = (await invoker()('folder:discover', opts)) as WriteEnvelope<FolderDiscoverResult>
     return unwrap(env)
   }
-  async deleteMsg(id: number): Promise<unknown> {
-    const env = (await invoker()('folder:delete', id)) as WriteEnvelope<unknown>
+  async getWhitelist(): Promise<FolderWhitelistResult> {
+    const env = (await invoker()('folder:getWhitelist')) as WriteEnvelope<FolderWhitelistResult>
     return unwrap(env)
   }
-  async move(id: number, to?: string): Promise<unknown> {
-    const env = (await invoker()('folder:move', id, to)) as WriteEnvelope<unknown>
+  async setWhitelist(imapNames: string[]): Promise<FolderSetWhitelistResult> {
+    const env = (await invoker()(
+      'folder:setWhitelist',
+      imapNames
+    )) as WriteEnvelope<FolderSetWhitelistResult>
     return unwrap(env)
   }
-  async sendDraft(id: number): Promise<unknown> {
-    const env = (await invoker()('folder:sendDraft', id)) as WriteEnvelope<unknown>
+  // 文件夹管理 (P4) — 新建/重命名/删除 走 Main→daemon→serve-api 转发 (envelope 保 code)。
+  async createFolder(parentImapName: string | null, name: string): Promise<FolderManageResult> {
+    const env = (await invoker()(
+      'folder:create',
+      parentImapName,
+      name
+    )) as WriteEnvelope<FolderManageResult>
     return unwrap(env)
   }
-  async createDraft(opts: FolderCreateDraftOpts): Promise<unknown> {
-    const env = (await invoker()('folder:createDraft', opts)) as WriteEnvelope<unknown>
+  async renameFolder(imapName: string, newName: string): Promise<FolderManageResult> {
+    const env = (await invoker()(
+      'folder:rename',
+      imapName,
+      newName
+    )) as WriteEnvelope<FolderManageResult>
     return unwrap(env)
   }
-  async editDraft(opts: FolderEditDraftOpts): Promise<unknown> {
-    const env = (await invoker()('folder:editDraft', opts)) as WriteEnvelope<unknown>
+  async deleteFolder(imapName: string): Promise<FolderManageResult> {
+    const env = (await invoker()(
+      'folder:manageDelete',
+      imapName
+    )) as WriteEnvelope<FolderManageResult>
+    return unwrap(env)
+  }
+  async cleanup(imapName: string): Promise<FolderCleanupResult> {
+    const env = (await invoker()('folder:cleanup', imapName)) as WriteEnvelope<FolderCleanupResult>
     return unwrap(env)
   }
 }

@@ -17,7 +17,7 @@ from __future__ import annotations
 import re
 import sqlite3
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.header import decode_header, make_header
 from email.parser import BytesParser
 from email.utils import getaddresses, parsedate_to_datetime
@@ -32,8 +32,11 @@ from src.mail.backend.imap_client import (
     discover_sent_folder,
     imap_connect,
     imap_session,
+    parse_folder_csv_or_json,
     probe_tcp,
+    quote_mailbox,
 )
+from src.mail.backend.imap_utf7 import decode_imap_utf7, encode_imap_utf7
 from src.mail.backend.types import (
     BackendHealth,
     BackendOrigin,
@@ -245,6 +248,9 @@ class DavMailBackend(IMailBackend):
         _mbs = [m.strip() for m in (getattr(cfg, "sync_mailboxes", "") or "").split(",")]
         self._sync_sent: bool = any(m in ("发件箱", "已发送", "已发送邮件") for m in _mbs)
         self.inbox_uidvalidity: Optional[int] = None
+        # 多文件夹同步白名单 (SYNC_FOLDERS, IMAP 原始名 modified-UTF7)。空=零激活=与现状逐字节一致。
+        # 排除空项 + INBOX (主路径单独管) + 去重保序; Sent 由 _sync_sent 单独管，避免双拉。
+        self._custom_folders: list[str] = self._parse_custom_folders(cfg)
         self.last_op_latency_ms: Optional[int] = None
 
         # Phase B: 让 NewWatcher / fanout / handler 的 self.arm / self.radar 调用直接 work.
@@ -258,6 +264,31 @@ class DavMailBackend(IMailBackend):
         # davmail radar 内存缓存 marker (sync_store 持久化由 NewWatcher 通过
         # sync_store.set_last_max_row_id 完成, 跟 AppleScript 模式一致路径)
         self._cached_marker: Optional[int] = None
+
+    @staticmethod
+    def _parse_custom_folders(cfg: "Config") -> list[str]:
+        """SYNC_FOLDERS → 去重保序的自定义文件夹 imap_name 列表。
+
+        **格式优先 JSON 数组**: ``["Notion","&W,mL3VOGU,KLsF9V-"]`` —— modified-UTF7 名
+        **本身含逗号** (base64 段用 ``,`` 代替 ``/``, 如 对话历史记录=``&W,mL3VOGU,KLsF9V-``),
+        逗号分隔会拆坏中文名。解析失败 (非 JSON / 旧 CSV 配置) 退回逗号分隔 (兼容简单 ASCII 名)。
+
+        排除空项 + INBOX (主路径单独管, 避免双拉)。
+        """
+        names = parse_folder_csv_or_json(getattr(cfg, "sync_folders", "") or "")
+        return [n for n in names if n.upper() != "INBOX"]
+
+    def _effective_custom_folders(self) -> list[str]:
+        """白名单去掉运行时探测到的系统文件夹 (Sent / Drafts)。
+
+        INBOX 已在 `_parse_custom_folders` 排除; 但用户**手改** SYNC_FOLDERS 仍可能塞进
+        Sent (探测名如 "Sent"/"Sent Items") → 与 SYNC_MAILBOXES 发件箱主路径双拉。CLI
+        `folder enable` 已 gate 系统文件夹, 这里再兜一道 (防绕过)。
+        """
+        blocked = {f for f in (self.sent_folder, self.drafts_folder) if f}
+        if not blocked:
+            return list(self._custom_folders)
+        return [f for f in self._custom_folders if f not in blocked]
 
     # =========================================================================
     # 启动 / 健康检查
@@ -412,7 +443,10 @@ class DavMailBackend(IMailBackend):
         fetch_timeout = int(getattr(self.cfg, "davmail_fetch_timeout_sec", 120))
         try:
             with imap_session(self.cfg, timeout=fetch_timeout) as imap:
-                typ, _ = imap.select(imap_box, readonly=True)
+                # quote_mailbox: 含空格的名 (probe "Sent Items" / 编码后的自定义名如
+                # "&mHl27g- &VGhipQ-") 不 quote 会被 imaplib 拆成多 atom → SELECT 失败;
+                # 简单名 quote 无害 (与 _fetch_folder_headers 的既有约定一致)。
+                typ, _ = imap.select(quote_mailbox(imap_box), readonly=True)
                 if typ != "OK":
                     logger.warning(f"[davmail-backend] SELECT {imap_box!r} failed")
                     return None
@@ -544,7 +578,7 @@ class DavMailBackend(IMailBackend):
         imap_box = self._resolve_imap_box(mailbox)
         try:
             with imap_session(self.cfg, timeout=60) as imap:
-                typ, _ = imap.select(imap_box, readonly=True)
+                typ, _ = imap.select(quote_mailbox(imap_box), readonly=True)
                 if typ != "OK":
                     return []
                 uv = _read_uidvalidity_from_select(imap)
@@ -660,7 +694,9 @@ class DavMailBackend(IMailBackend):
         imap_box = self._resolve_imap_box(mailbox or record.get("mailbox"))
         try:
             with imap_session(self.cfg, timeout=30) as imap:
-                typ, _ = imap.select(imap_box, readonly=False)
+                # quote_mailbox: flag 写回同样要 SELECT 对 folder; 中文自定义文件夹的
+                # flag 写回 (真机 internal_id=1000004131) 与拉正文同样会撞编码炸。
+                typ, _ = imap.select(quote_mailbox(imap_box), readonly=False)
                 if typ != "OK":
                     logger.warning(f"[davmail-backend] SELECT {imap_box!r} (rw) failed")
                     return False
@@ -944,13 +980,13 @@ class DavMailBackend(IMailBackend):
 
         委托 ``sender.build_outgoing_mime`` 单一来源 — forward 引用块 + 附件 multipart/mixed
         + threading 头逻辑都在那. 保留 ``_build_reply_mime`` 别名供 append_draft /
-        folder_sync.imap_folder_reader 等现有调用点 (zero 改动).
+        imap_folder_reader 等现有调用点 (zero 改动).
         """
         from src.mail.backend.sender import build_outgoing_mime
 
         return build_outgoing_mime(self.cfg, draft)
 
-    # 向后兼容别名: append_draft / folder_sync.imap_folder_reader 仍调 _build_reply_mime.
+    # 向后兼容别名: append_draft / imap_folder_reader 仍调 _build_reply_mime.
     _build_reply_mime = _build_mime
 
     # =========================================================================
@@ -976,7 +1012,7 @@ class DavMailBackend(IMailBackend):
         imap_box = self._resolve_imap_box(mailbox)
         try:
             with imap_session(self.cfg, timeout=60) as imap:
-                typ, _ = imap.select(imap_box, readonly=True)
+                typ, _ = imap.select(quote_mailbox(imap_box), readonly=True)
                 if typ != "OK":
                     return None
                 imap_uid = self._lookup_uid_by_message_id(imap, message_id)
@@ -1070,24 +1106,42 @@ class DavMailBackend(IMailBackend):
         return 0
 
     def _resolve_imap_box(self, mailbox: Optional[str]) -> str:
-        """中文 mailbox → IMAP folder, 优先用 probe 探测到的实际名。
+        """中文 mailbox → IMAP folder 原始名 (modified-UTF7), 优先用 probe 探测到的实际名。
 
         _mailbox_to_imap 是静态映射 (发件箱→"Sent Items", 草稿→"Drafts"), 但不同
         服务器 Sent/Drafts 实际名可能不同 (如 "已发送邮件")。probe 探测到 self.sent_folder
         / self.drafts_folder 后, 这里优先用探测值, 保证 fetch/flag/read 操作 SELECT 对
         folder (否则发件箱邮件取不到全文)。
+
+        🔴 自定义文件夹 fallthrough: ``_mailbox_to_imap`` 未命中映射时**原样返回显示名**
+        (含中文, 如 "DMS固件发布")。直接 SELECT 中文名 → imaplib 内部按 ASCII 编码 args
+        → ``'ascii' codec can't encode`` 炸 (真机 internal_id=1000004131 fetch/flag 都炸)。
+        这里把 fallthrough 的自定义名用 ``encode_imap_utf7`` 编回 IMAP 原始名 (modified-UTF7,
+        纯 ASCII), 与正向 sync 的 ``_effective_custom_folders`` (白名单存的就是原始名) +
+        ``mail_write._resolve_folder_imap`` 语义对齐。
+
+        ⚠️ **严禁对 probe 值 / 已命中映射的标准名 encode**: probe 的 self.sent_folder /
+        self.drafts_folder 来自 IMAP LIST, **已是编码后的原始名**; 对其二次 encode 会把
+        ``&`` 错改写为 ``&-`` (如 ``DMS&VvpO9lPRXgM-`` → ``DMS&-VvpO9lPRXgM-``) → SELECT 失败。
+        故 probe/映射两分支提前 return, 不经过下面的 encode。纯 ASCII 自定义名 encode 是
+        恒等 (仅转义 ``&``), 故对 ``Notion``/``Jira`` 等也安全。
         """
         if mailbox in ("发件箱", "已发送", "已发送邮件") and self.sent_folder:
             return self.sent_folder
         if mailbox in ("草稿箱", "草稿", "Drafts") and self.drafts_folder:
             return self.drafts_folder
-        return _mailbox_to_imap(mailbox)
+        mapped = _mailbox_to_imap(mailbox)
+        # fallthrough (未命中映射 → 原样返回显示名) 才 encode; 命中映射的标准 IMAP 名
+        # (INBOX / "Sent Items" / "Drafts" 等) 原样透传, 不二次编码。
+        if mapped == mailbox and mapped not in (None, "", "INBOX"):
+            return encode_imap_utf7(mapped)
+        return mapped
 
     def _folder_uidnext(self, imap_folder: str) -> int:
         """STATUS <folder> (UIDNEXT) — 给发件箱变化检测用 (INBOX 走 get_current_max_row_id)."""
         try:
             with imap_session(self.cfg, timeout=30) as imap:
-                typ, data = imap.status(imap_folder, "(UIDNEXT)")
+                typ, data = imap.status(quote_mailbox(imap_folder), "(UIDNEXT)")
                 if typ == "OK" and data:
                     uidnext = self._extract_status_value(data[0], "UIDNEXT")
                     if uidnext:
@@ -1122,7 +1176,33 @@ class DavMailBackend(IMailBackend):
                 # 必触发 (走日期下限回填)。
                 sent_marker = self._max_sent_imap_uid()
                 sent_new = max(0, sent_uidnext - (sent_marker + 1))
-        return (inbox_new > 0 or sent_new > 0, current, inbox_new + sent_new)
+        # --- 自定义文件夹 (SYNC_FOLDERS): STATUS(UIDNEXT UIDVALIDITY) 轻量探测变化 ---
+        # 仅用于触发 has_new; 真正取数 + marker 推进在 get_new_emails 内。每文件夹独立 try,
+        # 一个失败 (重命名/删除) 不影响 INBOX/其它。空白名单时整段跳过 = 零激活。
+        custom_new = 0
+        for imap_name in self._effective_custom_folders():
+            try:
+                uidnext, uv = self._folder_status(imap_name)
+                if uidnext <= 0:
+                    continue
+                label = decode_imap_utf7(imap_name)
+                stored_uv = self._get_folder_uidvalidity(imap_name)
+                if stored_uv is not None and uv and uv != stored_uv:
+                    # UIDVALIDITY 变化 → 该文件夹需全量重拉 → 必触发。
+                    custom_new += 1
+                    continue
+                marker = self._max_folder_imap_uid(label)
+                custom_new += max(0, uidnext - (marker + 1))
+            except Exception as e:
+                logger.warning(
+                    f"[davmail-backend] custom folder {imap_name!r} change-probe "
+                    f"failed (others unaffected): {e}"
+                )
+        return (
+            inbox_new > 0 or sent_new > 0 or custom_new > 0,
+            current,
+            inbox_new + sent_new + custom_new,
+        )
 
     def get_new_emails(self, since_row_id: int) -> list[dict]:
         """SQLiteRadar.get_new_emails 兼容 — 多 folder UID SEARCH + BATCH FETCH.
@@ -1170,26 +1250,76 @@ class DavMailBackend(IMailBackend):
                             f"[davmail-backend] sent folder sync failed "
                             f"(inbox unaffected): {e}"
                         )
+                # --- 自定义文件夹白名单 (SYNC_FOLDERS) ---
+                # 每个文件夹独立 UID 空间; marker 从 SQLite 派生 (复用 Sent 模式), per-folder
+                # UIDVALIDITY 存 sync_state KV → 变化时全量重拉。每文件夹独立 try (一个失败不
+                # 影响其它 + INBOX 主路径)。max_messages 截断防大文件夹灌爆。空白名单时整段
+                # 跳过 = 与现状逐字节一致 (隔离不变量)。
+                for imap_name in self._effective_custom_folders():
+                    try:
+                        out.extend(self._fetch_custom_folder(imap, imap_name))
+                    except Exception as e:
+                        logger.error(
+                            f"[davmail-backend] custom folder {imap_name!r} sync "
+                            f"failed (others + inbox unaffected): {e}"
+                        )
             return out
         except Exception as e:
             logger.error(f"[davmail-backend] get_new_emails failed: {e}")
             return out
+
+    def _fetch_custom_folder(self, imap, imap_name: str) -> list[dict]:
+        """取一个自定义文件夹的新邮件。marker 派生 + UIDVALIDITY 变化检测 + 上限截断。
+
+        criteria 决策 (SELECT 后拿到真实 UIDVALIDITY):
+          - stored_uv 存在且 != current_uv → UIDVALIDITY 变了 → 全量重拉 (SINCE 窗口下限)；
+          - 否则 marker>0 → UID>marker 增量；marker==0 (首次) → SINCE 窗口下限回填。
+        message_id merge protection 兜底重拉去重 (与 Sent 首次回填同理)。
+        """
+        label = decode_imap_utf7(imap_name)
+        marker = self._max_folder_imap_uid(label)
+        stored_uv = self._get_folder_uidvalidity(imap_name)
+        max_messages = int(getattr(self.cfg, "folder_sync_max_messages", 0) or 0)
+        return self._fetch_new_in_folder(
+            imap, imap_name, label,
+            search_criteria=None,                # custom 模式: criteria 在 SELECT 后内部决策
+            track_inbox_uidvalidity=False,
+            folder_marker=marker,
+            stored_uidvalidity=stored_uv,
+            date_floor=self._folder_date_floor(),
+            max_messages=max_messages,
+            persist_uidvalidity_for=imap_name,
+        )
 
     def _fetch_new_in_folder(
         self,
         imap,
         imap_folder: str,
         mailbox_label: str,
-        search_criteria: tuple[str, str],
+        search_criteria: Optional[tuple[str, str]] = None,
         *,
         track_inbox_uidvalidity: bool,
+        max_messages: Optional[int] = None,
+        folder_marker: Optional[int] = None,
+        stored_uidvalidity: Optional[int] = None,
+        date_floor: Optional[str] = None,
+        persist_uidvalidity_for: Optional[str] = None,
     ) -> list[dict]:
-        """SELECT 一个 IMAP folder → UID SEARCH (criteria) → BATCH FETCH headers →
-        分配 internal_id + 打 mailbox/backend_origin 标签。get_new_emails 的单 folder 原语。
+        """SELECT 一个 IMAP folder → UID SEARCH → BATCH FETCH headers → 分配 internal_id +
+        打 mailbox/backend_origin 标签。get_new_emails 的单 folder 原语。
 
-        search_criteria = (key, arg), e.g. ("UID", "5001:*") 或 ("SENTSINCE", "01-May-2026")。
+        两种模式:
+        - **固定 criteria** (INBOX/Sent): 传 ``search_criteria=(key, arg)``，直接用。
+        - **自定义文件夹** (``search_criteria=None``): SELECT 拿真实 UIDVALIDITY 后内部决策——
+          stored_uv 存在且变了→全量重拉 (SINCE date_floor)；marker>0→UID 增量；否则首次 SINCE 回填。
+
+        ``max_messages`` (>0): SEARCH 超限时只取**最新** N 封 (UID 升序末尾 N)。
+        ``persist_uidvalidity_for`` (imap_name): 非空时把本次 SELECT 读到的 UIDVALIDITY 存 KV
+        (无论是否取到新邮件，确保游标基线落库)。
         """
-        typ, _ = imap.select(imap_folder, readonly=True)
+        # mailbox 名必须 quote (含空格如 "Sent Items"/"Unsent Messages" 不 quote 会被
+        # imaplib 拆成多 atom → SELECT 失败)。简单名 quote 无害 (实测)。
+        typ, _ = imap.select(quote_mailbox(imap_folder), readonly=True)
         if typ != "OK":
             logger.warning(f"[davmail-backend] SELECT {imap_folder!r} failed: {typ}")
             return []
@@ -1198,13 +1328,40 @@ class DavMailBackend(IMailBackend):
         uv = _read_uidvalidity_from_select(imap)
         if uv and track_inbox_uidvalidity:
             self.inbox_uidvalidity = uv
+
+        def _persist_uv() -> None:
+            if persist_uidvalidity_for and uv:
+                self._set_folder_uidvalidity(persist_uidvalidity_for, uv)
+
+        # 自定义文件夹模式: 据真实 UIDVALIDITY 决策 criteria
+        if search_criteria is None:
+            if stored_uidvalidity is not None and uv and uv != stored_uidvalidity:
+                logger.info(
+                    f"[davmail-backend] {mailbox_label!r} UIDVALIDITY changed "
+                    f"{stored_uidvalidity}→{uv} → full re-pull (SINCE {date_floor})"
+                )
+                search_criteria = ("SINCE", date_floor or self._imap_date_floor())
+            elif folder_marker and folder_marker > 0:
+                search_criteria = ("UID", f"{folder_marker + 1}:*")
+            else:
+                search_criteria = ("SINCE", date_floor or self._imap_date_floor())
+
         key, arg = search_criteria
         typ, data = imap.uid("search", None, key, arg)
         if typ != "OK" or not data or not data[0]:
+            _persist_uv()
             return []
         uids = data[0].split()
         if not uids:
+            _persist_uv()
             return []
+        # max_messages 截断: UID SEARCH 返回升序, 取末尾 N (最新) 防大文件夹首拉灌爆。
+        if max_messages and max_messages > 0 and len(uids) > max_messages:
+            logger.info(
+                f"[davmail-backend] {mailbox_label!r}: {len(uids)} matched, capped to "
+                f"newest {max_messages} (FOLDER_SYNC_MAX_MESSAGES)"
+            )
+            uids = uids[-max_messages:]
         uid_seq = b",".join(uids).decode()
         typ, data = imap.uid(
             "fetch", uid_seq,
@@ -1212,8 +1369,11 @@ class DavMailBackend(IMailBackend):
             "(MESSAGE-ID SUBJECT FROM DATE REFERENCES IN-REPLY-TO)])",
         )
         if typ != "OK" or not data:
+            _persist_uv()
             return []
-        parsed = self._parse_batch_headers(data)
+        # 每封邮件的 imap_uidvalidity = 本 folder 的 uv (不再用 inbox_uidvalidity —
+        # 修复 Sent/自定义文件夹 uidvalidity 张冠李戴的潜在问题)。
+        parsed = self._parse_batch_headers(data, uidvalidity=uv)
         out: list[dict] = []
         for item in parsed:
             try:
@@ -1232,6 +1392,7 @@ class DavMailBackend(IMailBackend):
                 f"[davmail-backend] _fetch_new_in_folder({mailbox_label}): parsed "
                 f"{len(out)} from {len(uids)} UIDs (missing {len(uids) - len(out)})"
             )
+        _persist_uv()
         return out
 
     def _max_sent_imap_uid(self) -> int:
@@ -1269,6 +1430,69 @@ class DavMailBackend(IMailBackend):
             return ("UID", f"{marker + 1}:*")
         return ("SENTSINCE", self._imap_date_floor())
 
+    # ---- 多文件夹同步: per-folder marker / uidvalidity / 窗口 helper ----
+
+    def _max_folder_imap_uid(self, mailbox_label: str) -> int:
+        """SQLite 里某 mailbox label 已导入的最大 davmail IMAP UID (派生增量游标)。
+
+        通用版 _max_sent_imap_uid: 按 mailbox 字段 (中文 display name) + backend_origin='davmail'
+        过滤。首次 (无该 folder 的 davmail 行) 返回 0 → 调用方退化窗口下限回填。
+        """
+        try:
+            conn = sqlite3.connect(str(self.sync_store.db_path), timeout=10.0)
+            try:
+                row = conn.execute(
+                    "SELECT MAX(imap_uid) FROM email_metadata "
+                    "WHERE mailbox = ? AND backend_origin = 'davmail' AND imap_uid IS NOT NULL",
+                    (mailbox_label,),
+                ).fetchone()
+                return int(row[0]) if row and row[0] is not None else 0
+            except Exception as e:
+                logger.warning(f"[davmail-backend] _max_folder_imap_uid({mailbox_label!r}) failed: {e}")
+                return 0
+            finally:
+                conn.close()
+        except Exception as e:
+            logger.warning(f"[davmail-backend] _max_folder_imap_uid({mailbox_label!r}) connect failed: {e}")
+            return 0
+
+    def _folder_status(self, imap_name: str) -> tuple[int, Optional[int]]:
+        """STATUS <folder> (UIDNEXT UIDVALIDITY) → (uidnext, uidvalidity)。失败返回 (0, None)。"""
+        try:
+            with imap_session(self.cfg, timeout=30) as imap:
+                typ, data = imap.status(quote_mailbox(imap_name), "(UIDNEXT UIDVALIDITY)")
+                if typ == "OK" and data:
+                    uidnext = self._extract_status_value(data[0], "UIDNEXT")
+                    uv = self._extract_status_value(data[0], "UIDVALIDITY")
+                    return (int(uidnext) if uidnext else 0, int(uv) if uv else None)
+        except Exception as e:
+            logger.warning(f"[davmail-backend] _folder_status({imap_name!r}) failed: {e}")
+        return (0, None)
+
+    def _folder_date_floor(self) -> str:
+        """自定义文件夹首次窗口下限 = today - FOLDER_SYNC_PAST_DAYS → IMAP SEARCH 日期格式。"""
+        days = int(getattr(self.cfg, "folder_sync_past_days", 90) or 90)
+        floor = datetime.now(timezone.utc) - timedelta(days=max(0, days))
+        return floor.strftime("%d-%b-%Y")
+
+    def _folder_uidvalidity_key(self, imap_name: str) -> str:
+        return f"folder_uidvalidity:{imap_name}"
+
+    def _get_folder_uidvalidity(self, imap_name: str) -> Optional[int]:
+        """读 per-folder UIDVALIDITY (sync_state KV)。未记录返回 None。"""
+        try:
+            val = self.sync_store.get_state(self._folder_uidvalidity_key(imap_name))
+            return int(val) if val else None
+        except Exception:
+            return None
+
+    def _set_folder_uidvalidity(self, imap_name: str, uv: int) -> None:
+        """存 per-folder UIDVALIDITY (sync_state KV)。"""
+        try:
+            self.sync_store.set_state(self._folder_uidvalidity_key(imap_name), str(int(uv)))
+        except Exception as e:
+            logger.warning(f"[davmail-backend] _set_folder_uidvalidity({imap_name!r}={uv}) failed: {e}")
+
     def set_last_max_row_id(self, row_id: int) -> None:
         """SQLiteRadar.set_last_max_row_id 兼容 — 内存缓存 (持久化走 sync_store)."""
         self._cached_marker = int(row_id) if row_id else None
@@ -1277,8 +1501,12 @@ class DavMailBackend(IMailBackend):
         """SQLiteRadar.get_last_max_row_id 兼容."""
         return self._cached_marker or 0
 
-    def _parse_batch_headers(self, data: list) -> list[dict]:
+    def _parse_batch_headers(self, data: list, *, uidvalidity: Optional[int] = None) -> list[dict]:
         """从 batch FETCH HEADER.FIELDS 响应解析出 dict list.
+
+        ``uidvalidity``: 该批邮件所属 folder 的 UIDVALIDITY (从 SELECT 响应读)。每封邮件的
+        ``imap_uidvalidity`` 用它; 省略时回退 ``self.inbox_uidvalidity`` (向后兼容 fetch_recent
+        等老调用方)。
 
         注意 ``internal_id`` 字段**不在这里设置** — davmail mode 下应由调用方
         (``get_new_emails`` / ``fetch_recent``) 通过 ``sync_store.allocate_davmail_internal_id()``
@@ -1357,7 +1585,7 @@ class DavMailBackend(IMailBackend):
                 "is_flagged": "\\Flagged" in flags,
                 "thread_id": thread_id,
                 "imap_uid": uid,
-                "imap_uidvalidity": self.inbox_uidvalidity,
+                "imap_uidvalidity": uidvalidity if uidvalidity is not None else self.inbox_uidvalidity,
                 "references_raw": references.strip() or None,
                 "in_reply_to_raw": in_reply_to.strip().strip("<>") or None,
             })

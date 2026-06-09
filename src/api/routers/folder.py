@@ -1,35 +1,24 @@
-"""folder 路由 — /api/folder/* (READ only)。
+"""folder 路由 — /api/folder/* (多文件夹同步: 发现 / 白名单 / CRUD)。
 
-填充 4 个读端点 (handoff §2; 写端点全 defer):
-  GET /api/folder/{folder}/list    — list      (FolderEmailMeta[])
-  GET /api/folder/{folder}/{id}    — get       (FolderEmailDetail, 404→null)
-  GET /api/folder/{folder}/search  — search    (FolderSearchResult)
-  GET /api/folder/sync-status      — syncStatus (FolderSyncStatusResult)
+端点 (全 davmail-only, cleanup 例外为纯本地):
+  GET  /api/folder/discover    — 发现 Exchange 全部文件夹 (层级树 + special-use + 邮件数)
+  GET  /api/folder/whitelist   — 读当前 SYNC_FOLDERS 白名单
+  PUT  /api/folder/whitelist   — 覆盖式保存白名单 (写 .env)
+  POST /api/folder/manage      — 新建子文件夹 (IMAP CREATE)
+  PATCH /api/folder/manage     — 重命名文件夹 (IMAP RENAME + 本地一致性)
+  DELETE /api/folder/manage    — 删除文件夹 (IMAP DELETE + 本地清理 + 白名单移除)
+  POST /api/folder/cleanup     — 取消同步某文件夹时清理本地副本 (纯本地, 不碰 Exchange)
 
 实现纪律:
-  - 全部经 ``FolderEmailRepository`` (src/folder_sync/repository.py) **直读**
-    ``folder_email`` / ``folder_email_fts`` / ``folder_sync_state`` 表 — 这是纯 SQLite
-    reader, **避开 davmail gate** (gate 只在 CLI 写命令的 FolderImapReader 路径,
-    handoff §2 + gotcha #6)。任何 backend 都能读已同步的本地数据。
-  - **gotcha #1 (local_path)**: folder attachments 存的就是 ``{filename, size,
-    content_type}`` (imap_folder_reader._extract_attachments_meta, 无 host 路径),
-    天然无泄漏; 仍显式投影成 FolderAttachmentMeta 防未来字段漂移。
-  - data 形状 = 前端 FolderEmailMeta/Detail/SearchResult/SyncStatusResult
-    (shared/api/types.ts + schemas/folder.py)。**list/search 投影成 meta** (丢
-    raw_mime_sha256 / synced_at / created_at / updated_at / deleted_at —
-    schema 不含这些); get 额外带 body_html / body_markdown。
-  - repo 每调用开短命连接即关 (WAL 下与 mail-sync writer 并发安全, gotcha #13)。
-  - 统一响应走 app.success_envelope / app.APIError; 鉴权挂 Depends(verify_cf_access);
-    meta.source='sqlite'。
-
-注意路由顺序: ``/sync-status`` 必须在 ``/{folder}/...`` 之前声明, 否则
-``sync-status`` 会被 ``{folder}`` path 吞掉 (FastAPI 按声明序匹配)。这里 sync-status
-prefix 与 ``{folder}/...`` 段数不同 (1 段 vs 2-3 段), 无歧义, 但仍保守先声明定长路由。
+  - 统一响应走 app.success_envelope / app.APIError; 鉴权挂 Depends(verify_cf_access)。
+  - davmail gate 经 _require_davmail (按 config 值判, 不构造 backend)。
+  - 写文件夹经 MailWriteService (服务层单一真源, 与 CLI folder create/rename/delete-folder
+    共用)。
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, Depends, Query, Request
 
@@ -39,258 +28,294 @@ from src.api.deps import get_settings
 
 if TYPE_CHECKING:
     from src.config import Config
-    from src.folder_sync.repository import FolderEmailRepository, FolderEmailRow
 
 router = APIRouter(prefix="/api/folder", tags=["folder"])
 
-VALID_FOLDERS = ("archive", "drafts")
-LIST_LIMIT_MAX = 500
-SEARCH_LIMIT_MAX = 200
+
+# ============================================================
+# 多文件夹同步: discover + whitelist (davmail-only)
+# ============================================================
+
+from pydantic import BaseModel  # noqa: E402
 
 
-def _build_repo(cfg: "Config") -> "FolderEmailRepository":
-    """从 config 单例构造 FolderEmailRepository (短连接, 无 davmail 依赖)。"""
-    from src.folder_sync.repository import FolderEmailRepository
+class _WhitelistBody(BaseModel):
+    """PUT /api/folder/whitelist 请求体 — 完整白名单 (imap 原始名列表, 覆盖式保存)。"""
 
-    return FolderEmailRepository(cfg.sync_store_db_path)
+    folders: list[str]
 
 
-def _validate_folder(folder: str) -> None:
-    if folder not in VALID_FOLDERS:
+def _require_davmail(cfg: "Config") -> None:
+    if (getattr(cfg, "mailagent_backend", "") or "").lower() != "davmail":
         raise APIError(
             "E_INVALID_ARG",
-            f"folder must be one of {list(VALID_FOLDERS)}, got {folder!r}",
-            source="sqlite",
+            "多文件夹发现/白名单需要 davmail 后端 (MAILAGENT_BACKEND=davmail)",
+            hint="AppleScript 后端不支持自定义文件夹同步",
+            source="imap",
         )
 
 
-def _attachment_to_dict(att: dict[str, Any]) -> dict[str, Any]:
-    """folder attachment → FolderAttachmentMeta wire dict (gotcha #1: 仅展示字段)。
+def _parse_whitelist_raw(raw: str) -> list[str]:
+    """SYNC_FOLDERS 原始串 → 去重保序的自定义文件夹 imap_name 列表。
 
-    存储形 = {filename, size, content_type} (imap_folder_reader)。显式挑这三个键,
-    即便上游将来多塞字段也不外泄 (绝无 local_path / host 路径)。
+    解析语义**必须与 watcher 侧 (DavMailBackend._parse_custom_folders) + serve-api PUT
+    完全一致**: parse_folder_csv_or_json (JSON 数组优先, 兼容旧 CSV) + 排除 INBOX
+    (主路径单独管, 大小写不敏感)。这里抽出接收 raw 串的版本, 供 _current_whitelist
+    热读 .env 复用 (不经过 import-time Config 单例)。
     """
-    return {
-        "filename": att.get("filename", "(unnamed)"),
-        "size": att.get("size", 0),
-        "content_type": att.get("content_type", "application/octet-stream"),
-    }
+    from src.mail.backend.imap_client import parse_folder_csv_or_json
+
+    names = parse_folder_csv_or_json(raw or "")
+    return [n for n in names if n.upper() != "INBOX"]
 
 
-def _row_to_meta(row: "FolderEmailRow") -> dict[str, Any]:
-    """FolderEmailRow → FolderEmailMeta wire dict (不含正文)。
+def _current_whitelist(cfg: "Config") -> list[str]:
+    """读当前白名单 —— **热读 .env** (脱离 import-time Config 单例)。
 
-    丢弃 raw_mime_sha256 / synced_at / created_at / updated_at / deleted_at
-    (前端 FolderEmailMeta 不含, schema forbid extra)。attachments 经
-    _attachment_to_dict 投影。
+    serve-api 是常驻进程 (「重启后端」只重启 mail-sync 不重启 serve-api), ``cfg`` 来自
+    ``get_settings`` 的 import-time ``Config()`` 单例 → 启动后写入的 SYNC_FOLDERS 永远
+    读不到 (GET /whitelist + discover 的 is_synced 永远空, UI 勾选状态丢失)。修法与 main 侧
+    commit 3f451e4d 对 /api/env 同构: 用 ``dotenv_values(_resolve_env_file())`` 取
+    SYNC_FOLDERS 原始串热解析; key 存在时用它 (即便空串/空数组也尊重, 代表"已清空"),
+    .env 缺该 key 或文件不存在时 fallback 现有 cfg 路径 (dev/test 兼容)。
     """
-    return {
-        "id": row.id,
-        "folder": row.folder,
-        "imap_uid": row.imap_uid,
-        "imap_uidvalidity": row.imap_uidvalidity,
-        "message_id": row.message_id,
-        "thread_id": row.thread_id,
-        "subject": row.subject or "",
-        "sender": row.sender or "",
-        "sender_name": row.sender_name,
-        "to_addr": row.to_addr or "",
-        "cc_addr": row.cc_addr or "",
-        "date_received": row.date_received,
-        "is_flagged": bool(row.is_flagged),
-        "has_attachments": bool(row.has_attachments),
-        "snippet": row.snippet,
-        "attachments": [_attachment_to_dict(a) for a in (row.attachments or [])],
-    }
+    try:
+        from src.config import _resolve_env_file
+        from dotenv import dotenv_values
+
+        env_file = _resolve_env_file()
+        if env_file:
+            parsed = dotenv_values(env_file)
+            if "SYNC_FOLDERS" in parsed:
+                raw = parsed.get("SYNC_FOLDERS")
+                return _parse_whitelist_raw(raw if isinstance(raw, str) else "")
+    except Exception:  # noqa: BLE001 — .env 不可读/单例构造抛 → fallback cfg 路径
+        pass
+
+    from src.mail.backend.davmail_backend import DavMailBackend
+
+    return DavMailBackend._parse_custom_folders(cfg)
 
 
-def _row_to_detail(row: "FolderEmailRow") -> dict[str, Any]:
-    """FolderEmailRow → FolderEmailDetail wire dict (meta + 正文)。"""
-    data = _row_to_meta(row)
-    data["body_html"] = row.body_html
-    data["body_markdown"] = row.body_markdown
-    return data
-
-
-# ===========================================================================
-# GET /api/folder/sync-status — FolderEmailRepository.list_sync_states + count
-# (定长路由, 先于 /{folder}/... 声明避免被吞)
-# ===========================================================================
-
-
-@router.get("/sync-status", dependencies=[Depends(verify_cf_access)])
-async def folder_sync_status(
+@router.get("/discover", dependencies=[Depends(verify_cf_access)])
+async def folder_discover(
     request: Request,
     cfg: "Config" = Depends(get_settings),
+    counts: bool = Query(True, description="是否逐文件夹 STATUS 邮件数 (慢, 可关)"),
 ):
-    """folder_sync_state 表 + 每 folder 行数统计 (镜像 ``mailagent folder sync-status``)。
+    """发现 Exchange 全部文件夹 (LIST → 层级树 + special-use + 邮件数)。davmail-only。
 
-    data = FolderSyncStatusResult {states, counts} (frontend FolderSyncStatusResult)。
-    states = FolderSyncStateItem[] (folder / imap_uidvalidity / last_uidnext /
-    last_full_sync_at / last_incremental_sync_at / last_error)。
+    data = {folders: [扁平含 is_synced/parent/has_children], tree: [嵌套], whitelist: [已同步 imap_name]}。
     """
-    repo = _build_repo(cfg)
-    states = repo.list_sync_states()
-    data = {
-        "states": [
-            {
-                "folder": s.folder,
-                "imap_uidvalidity": s.imap_uidvalidity,
-                "last_uidnext": s.last_uidnext,
-                "last_full_sync_at": s.last_full_sync_at,
-                "last_incremental_sync_at": s.last_incremental_sync_at,
-                "last_error": s.last_error,
-            }
-            for s in states
-        ],
-        "counts": {f: repo.count(f) for f in VALID_FOLDERS},
-    }
-    return success_envelope(data, request=request, source="sqlite")
+    _require_davmail(cfg)
+    from src.mail.backend.imap_client import build_folder_tree, list_folders
 
-
-# ===========================================================================
-# GET /api/folder/by-id/{id} — FolderEmailRepository.get (folder-agnostic)
-# (定长 'by-id' 前缀, 先于 /{folder}/{id:int} 声明避免被 {folder} 吞;
-#  镜像 Electron folder:get(id) — web FolderApi.get(id) 不带 folder)
-# ===========================================================================
-
-
-@router.get("/by-id/{id:int}", dependencies=[Depends(verify_cf_access)])
-async def folder_get_by_id(
-    request: Request,
-    id: int,
-    cfg: "Config" = Depends(get_settings),
-):
-    """按 row id 直取详情 (folder-agnostic; 含正文 + 附件元数据)。
-
-    web ``FolderApi.get(id)`` 只携带数字 row id, 不带 folder; 从 folder_email row
-    自解析 folder (``repo.get(id)`` 是主键查询, row 本就含 row.folder), 镜像
-    Electron ``folder:get(id)``。404 (E_NOT_FOUND) → 前端把它当 null。
-    """
-    repo = _build_repo(cfg)
-    row = repo.get(id)
-    if row is None:
-        raise APIError(
-            "E_NOT_FOUND",
-            f"folder_email id={id} not found",
-            hint="use GET /api/folder/{folder}/list to find available ids",
-            source="sqlite",
-        )
-    return success_envelope(_row_to_detail(row), request=request, source="sqlite")
-
-
-# ===========================================================================
-# GET /api/folder/{folder}/list — FolderEmailRepository.list
-# ===========================================================================
-
-
-@router.get("/{folder}/list", dependencies=[Depends(verify_cf_access)])
-async def folder_list(
-    request: Request,
-    folder: str,
-    cfg: "Config" = Depends(get_settings),
-    limit: int = Query(200, ge=1, le=LIST_LIMIT_MAX),
-    offset: int = Query(0, ge=0),
-):
-    """列出 folder 内邮件 metadata (本地表直读, 不含正文; date DESC)。
-
-    FolderListOpts 映射: path folder; query limit/offset。
-    data = FolderEmailMeta[] (frontend FolderEmailMeta), meta += {count, limit, offset}。
-    """
-    _validate_folder(folder)
-    repo = _build_repo(cfg)
-    rows = repo.list(folder, limit=limit, offset=offset)
-    data = [_row_to_meta(r) for r in rows]
+    try:
+        folders = list_folders(cfg, with_counts=counts)
+    except Exception as e:  # noqa: BLE001 — IMAP/连接失败统一上报
+        raise APIError("E_UPSTREAM", f"folder discover failed: {e}", source="imap")
+    whitelist = set(_current_whitelist(cfg))
+    flat = []
+    for fi in folders:
+        d = fi.to_dict()
+        d["is_synced"] = fi.imap_name in whitelist
+        flat.append(d)
     return success_envelope(
-        data,
+        {"folders": flat, "tree": build_folder_tree(folders), "whitelist": sorted(whitelist)},
         request=request,
-        source="sqlite",
-        meta_extra={"count": len(data), "limit": limit, "offset": offset},
+        source="imap",
     )
 
 
-# ===========================================================================
-# GET /api/folder/{folder}/search — FolderEmailRepository.search_fts
-# (定长 'search' 段先于 '{id}' 声明, 防 search 被当 id 解析)
-# ===========================================================================
-
-
-@router.get("/{folder}/search", dependencies=[Depends(verify_cf_access)])
-async def folder_search(
+@router.get("/whitelist", dependencies=[Depends(verify_cf_access)])
+async def folder_get_whitelist(
     request: Request,
-    folder: str,
     cfg: "Config" = Depends(get_settings),
-    q: str = Query(..., description="FTS5 查询 (默认 CJK-aware smart 改写)"),
-    raw: bool = Query(False, description="true=原样下放 FTS5; false(默认)=CJK smart 改写"),
-    limit: int = Query(50, ge=1, le=SEARCH_LIMIT_MAX),
 ):
-    """folder_email_fts 全文搜索 (bm25 排序, 限定单 folder)。
-
-    FolderSearchOpts 映射: path folder; query q/raw/limit。默认 smart 模式
-    (CJK-aware query 改写); raw=true 走原 FTS5 syntax。
-    data = FolderSearchResult {query, transformed_query, total_hits, hits}
-    (hits = FolderEmailMeta[], 无正文)。FTS 语法错误 → 空命中 (repo 内吞)。
-    """
-    _validate_folder(folder)
-    repo = _build_repo(cfg)
-
-    if raw:
-        transformed_query = None
-        fts_query = q
-    else:
-        from src.repository.email_repository import smart_query_transform
-
-        fts_query = smart_query_transform(q)
-        transformed_query = fts_query
-
-    rows = repo.search_fts(fts_query, folder=folder, limit=limit)
-    hits = [_row_to_meta(r) for r in rows]
-    data = {
-        "query": q,
-        "transformed_query": transformed_query,
-        "total_hits": len(hits),
-        "hits": hits,
-    }
-    meta_extra: dict[str, Any] = {
-        "query": q,
-        "total_hits": len(hits),
-        "limit": limit,
-        "count": len(hits),
-    }
-    if transformed_query is not None and transformed_query != q:
-        meta_extra["transformed_query"] = transformed_query
+    """读当前 SYNC_FOLDERS 白名单 (imap 原始名列表)。"""
     return success_envelope(
-        data, request=request, source="sqlite", meta_extra=meta_extra
+        {"folders": _current_whitelist(cfg)}, request=request, source="sqlite"
     )
 
 
-# ===========================================================================
-# GET /api/folder/{folder}/{id} — FolderEmailRepository.get
-# (最泛路由, 最后声明; {id:int} 约束避免吃掉 'list' / 'search' 段)
-# ===========================================================================
-
-
-@router.get("/{folder}/{id:int}", dependencies=[Depends(verify_cf_access)])
-async def folder_get(
+@router.put("/whitelist", dependencies=[Depends(verify_cf_access)])
+async def folder_set_whitelist(
+    body: _WhitelistBody,
     request: Request,
-    folder: str,
-    id: int,
     cfg: "Config" = Depends(get_settings),
 ):
-    """单封详情 (含正文 body_html / body_markdown + 附件元数据)。
+    """覆盖式保存 SYNC_FOLDERS 白名单 (写 .env, JSON 数组)。需 restart mail-sync 生效。
 
-    data = FolderEmailDetail (frontend FolderEmailDetail) = meta + 正文。
-    404 (E_NOT_FOUND) 当 id 不存在 (前端 get 把 404 当 null)。
-    folder path 段做白名单校验 + 与查到的 row.folder 交叉核对 (防跨 folder id 误读)。
+    排除空项 + INBOX (主路径单独管)，去重保序。系统文件夹由前端 gate (本端点不强校验,
+    避免每次 PUT 都 IMAP LIST; 误存系统名也由 _effective_custom_folders 运行时兜底过滤)。
     """
-    _validate_folder(folder)
-    repo = _build_repo(cfg)
-    row = repo.get(id)
-    if row is None or row.folder != folder:
-        raise APIError(
-            "E_NOT_FOUND",
-            f"folder_email id={id} not found in folder {folder!r}",
-            hint="use GET /api/folder/{folder}/list to find available ids",
-            source="sqlite",
+    _require_davmail(cfg)
+    import json as _json
+
+    from dotenv import set_key as _set_key
+
+    from src.config import _resolve_env_file
+
+    seen: set[str] = set()
+    names: list[str] = []
+    for raw in body.folders:
+        n = (raw or "").strip()
+        if not n or n.upper() == "INBOX" or n in seen:
+            continue
+        seen.add(n)
+        names.append(n)
+    new_raw = _json.dumps(names, ensure_ascii=False)
+    try:
+        env_file = _resolve_env_file()
+        from pathlib import Path as _Path
+
+        _p = _Path(env_file)
+        if not _p.exists():
+            _p.touch()
+        _set_key(str(env_file), "SYNC_FOLDERS", new_raw, quote_mode="auto")
+    except Exception as e:  # noqa: BLE001
+        raise APIError("E_GENERIC", f".env write failed: {e}", source="sqlite")
+    # 同进程其它 cfg.sync_folders 读者一致性: 写 .env 后顺手把 import-time 单例的
+    # sync_folders 更新为新值 (_current_whitelist 已热读 .env, 此处兜底其它直读 cfg 者)。
+    # pydantic settings 实例可 setattr; 失败 (validation/frozen) 不阻断 (热读已是主路径)。
+    try:
+        cfg.sync_folders = new_raw  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001 — 单例更新 best-effort, 热读 .env 才是一致性主保证
+        pass
+    return success_envelope(
+        {"folders": names, "restart_required": True}, request=request, source="sqlite"
+    )
+
+
+# ============================================================
+# 多文件夹同步: 文件夹管理 CRUD (POST/PATCH/DELETE /api/folder/manage, davmail-only)
+# ============================================================
+import asyncio as _asyncio  # noqa: E402
+
+from src.services.guards import Actor as _Actor  # noqa: E402
+from src.services.mail_write import MailWriteService as _MailWriteService  # noqa: E402
+
+
+class _FolderCreateBody(BaseModel):
+    parent: str = ""    # 父文件夹 imap_name (空=顶层)
+    name: str           # 子文件夹显示名 (可中文)
+
+
+class _FolderRenameBody(BaseModel):
+    imap_name: str
+    new_name: str       # 新叶子显示名 (可中文)
+
+
+class _FolderDeleteBody(BaseModel):
+    imap_name: str
+
+
+def _svc(request: Request) -> "_MailWriteService":
+    from src.api.deps import get_service_ctx
+
+    return _MailWriteService(get_service_ctx())
+
+
+def _http_actor() -> "_Actor":
+    return _Actor(kind="http", authenticated=True, label="cf-access")
+
+
+def _svc_error_to_api(exc) -> None:
+    raise APIError(
+        getattr(exc, "code", "E_GENERIC"),
+        getattr(exc, "message", str(exc)),
+        hint=getattr(exc, "hint", None),
+        source="cli",
+    )
+
+
+@router.post("/manage", dependencies=[Depends(verify_cf_access)])
+async def folder_manage_create(body: _FolderCreateBody, request: Request, cfg: "Config" = Depends(get_settings)):
+    """新建子文件夹 (IMAP CREATE → EWS)。davmail-only。"""
+    _require_davmail(cfg)
+    from src.services.errors import ServiceError
+
+    try:
+        result = await _asyncio.to_thread(
+            _svc(request).create_folder, body.parent, body.name, actor=_http_actor()
         )
-    return success_envelope(_row_to_detail(row), request=request, source="sqlite")
+        return success_envelope(
+            {"action": result.action, "imap_name": result.imap_name},
+            request=request, source="cli",
+        )
+    except ServiceError as exc:
+        _svc_error_to_api(exc)
+
+
+@router.patch("/manage", dependencies=[Depends(verify_cf_access)])
+async def folder_manage_rename(body: _FolderRenameBody, request: Request, cfg: "Config" = Depends(get_settings)):
+    """重命名文件夹 (IMAP RENAME + 本地一致性)。系统文件夹拒绝。davmail-only。"""
+    _require_davmail(cfg)
+    from src.services.errors import ServiceError
+
+    try:
+        result = await _asyncio.to_thread(
+            _svc(request).rename_folder, body.imap_name, body.new_name, actor=_http_actor()
+        )
+        return success_envelope(
+            {
+                "action": result.action,
+                "imap_name": result.imap_name,
+                "new_imap_name": result.new_imap_name,
+                "affected_local_rows": result.affected_local_rows,
+                "restart_required": result.restart_required,
+            },
+            request=request, source="cli",
+        )
+    except ServiceError as exc:
+        _svc_error_to_api(exc)
+
+
+@router.delete("/manage", dependencies=[Depends(verify_cf_access)])
+async def folder_manage_delete(body: _FolderDeleteBody, request: Request, cfg: "Config" = Depends(get_settings)):
+    """删除文件夹 (IMAP DELETE + 本地清理 + 白名单移除)。系统文件夹拒绝。davmail-only。"""
+    _require_davmail(cfg)
+    from src.services.errors import ServiceError
+
+    try:
+        result = await _asyncio.to_thread(
+            _svc(request).delete_folder, body.imap_name, actor=_http_actor()
+        )
+        return success_envelope(
+            {
+                "action": result.action,
+                "imap_name": result.imap_name,
+                "affected_local_rows": result.affected_local_rows,
+                "restart_required": result.restart_required,
+            },
+            request=request, source="cli",
+        )
+    except ServiceError as exc:
+        _svc_error_to_api(exc)
+
+
+class _FolderCleanupBody(BaseModel):
+    imap_name: str
+
+
+@router.post("/cleanup", dependencies=[Depends(verify_cf_access)])
+async def folder_manage_cleanup(body: _FolderCleanupBody, request: Request):
+    """取消同步某文件夹时清理本地副本 (P5)。**不碰 Exchange 文件夹**, 纯本地删除 +
+    白名单移除。非 davmail 也可 (纯本地操作)。"""
+    from src.services.errors import ServiceError
+
+    try:
+        result = await _asyncio.to_thread(
+            _svc(request).cleanup_local_folder, body.imap_name, actor=_http_actor()
+        )
+        return success_envelope(
+            {
+                "action": result.action,
+                "imap_name": result.imap_name,
+                "affected_local_rows": result.affected_local_rows,
+                "restart_required": result.restart_required,
+            },
+            request=request, source="cli",
+        )
+    except ServiceError as exc:
+        _svc_error_to_api(exc)
