@@ -63,6 +63,7 @@ import type {
   LlmRunOpts,
   LlmSelfTestData,
   LlmStatsData,
+  LlmUpstreamModelsData,
   MailApi,
   MailboxSummary,
   NotionAgentConfig,
@@ -455,7 +456,18 @@ export class HttpApi implements MailApi {
     stats: (days = 7): Promise<LlmStatsData> =>
       this.req<LlmStatsData>('GET', '/llm/stats', { query: { days } }),
 
-    selftest: (): Promise<LlmSelfTestData> => this.req<LlmSelfTestData>('GET', '/llm/selftest')
+    selftest: (): Promise<LlmSelfTestData> => this.req<LlmSelfTestData>('GET', '/llm/selftest'),
+
+    listUpstreamModels: (opts?: {
+      refresh?: boolean
+      provider?: 'main' | 'translate'
+    }): Promise<LlmUpstreamModelsData> =>
+      this.req<LlmUpstreamModelsData>('GET', '/llm/models', {
+        query: {
+          refresh: opts?.refresh ? 'true' : undefined,
+          provider: opts?.provider ?? undefined
+        }
+      })
   }
 
   // Sprint-15 write path is email.flag. The legacy notion.updateFlag endpoint

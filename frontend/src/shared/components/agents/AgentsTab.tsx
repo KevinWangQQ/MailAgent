@@ -8,17 +8,20 @@ import type { ReportAgentConfig, ReportCadence, ReportConfigPatch } from '@share
 import { CadencePill, ReportIcon, StatusBadge, Switch } from './primitives'
 import { useKosAvailable, useReportConfig, useReportList, useRunNow, useSetConfig } from './hooks'
 import { useExitAnimation } from '@shared/hooks/useExitAnimation'
+import { useEnabledModels } from '@shared/hooks/useLlmModels'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue
+} from '@shared/components/ui/select'
 
 const HOUR_OPTIONS = [6, 7, 8, 9, 10, 12, 18, 21]
 // weekday：与后端 worker.py 一致，Python datetime.weekday() 口径 0=周一 … 6=周日。
 const WEEKDAY_OPTIONS = [0, 1, 2, 3, 4, 5, 6]
 // day_of_month：后端 worker 用 now.day 精确匹配、无月末回退 → 限 1–28，保证每月都触发。
 const DAY_OF_MONTH_OPTIONS = Array.from({ length: 28 }, (_, i) => i + 1)
-const MODELS: Array<{ id: string; label: string; hint: string }> = [
-  { id: 'claude-opus-4-8', label: 'Claude Opus 4.8', hint: '默认 · 最强推理' },
-  { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6', hint: '更快 · 质量均衡' },
-  { id: 'gpt-5.5', label: 'GPT-5.5', hint: '限流时自动兜底' }
-]
 // 顺序固定，与 src/llm_agent/schema.py PRIORITY_ENUM 对齐 —— 勾选的优先级邮件带完整正文。
 const PRIORITY_ENUM = ['🔴 紧急', '🟡 重要', '🟢 一般', '⚪ 低'] as const
 
@@ -60,7 +63,8 @@ function AgentCard({
   const runNow = (): void => {
     if (!isRunning) void run(cfg.id)
   }
-  const modelLabel = MODELS.find((m) => m.id === cfg.model)?.label ?? cfg.model ?? MODELS[0].label
+  // dynamic-models: show the raw model id (no static label lookup needed).
+  const modelLabel = cfg.model ?? ''
 
   return (
     <div
@@ -403,7 +407,8 @@ export function ConfigDrawer({
   const [timezone, setTimezone] = useState<string>('')
   // 带完整正文的优先级集合；空配置回落到默认（紧急 + 重要）。
   const [bodyPriorities, setBodyPriorities] = useState<string[]>(['🔴 紧急', '🟡 重要'])
-  const [model, setModel] = useState<string>(MODELS[0].id)
+  const { models: enabledModels } = useEnabledModels()
+  const [model, setModel] = useState<string>('')
   const [kosEnrich, setKosEnrich] = useState(false)
   // 仅当 Gbrain（KOS）已配好（KOS_MCP_BASE + OAuth）才展示增强开关。
   const kosAvailable = useKosAvailable()
@@ -426,7 +431,7 @@ export function ConfigDrawer({
     setBodyPriorities(
       cfg.body_full_priorities?.length ? cfg.body_full_priorities : ['🔴 紧急', '🟡 重要']
     )
-    setModel(cfg.model || MODELS[0].id)
+    setModel(cfg.model || '')
     setKosEnrich(cfg.kos_enrich)
   }, [open, cfg])
 
@@ -743,66 +748,37 @@ export function ConfigDrawer({
               </Field>
             )}
 
-            {/* model */}
+            {/* model — single-select dropdown. Options = enabled set, plus the
+                current value appended as an orphan (annotated「（未启用）」) when it
+                is no longer in the enabled list, so the select still shows the
+                actual saved value instead of going blank. Mirrors AiTab's
+                LLM_MODEL select shape. */}
             <Field label={t('agents.config.model')}>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                {MODELS.map((m) => {
-                  const on = model === m.id
-                  return (
-                    <button
-                      key={m.id}
-                      type="button"
-                      onClick={() => setModel(m.id)}
-                      className="flex items-center"
-                      style={{
-                        gap: 11,
-                        padding: '11px 13px',
-                        borderRadius: 9,
-                        cursor: 'pointer',
-                        fontFamily: 'inherit',
-                        textAlign: 'left',
-                        background: on ? 'rgb(var(--c-accent) / 0.07)' : 'rgb(var(--ink-1))',
-                        border: `1px solid ${on ? 'rgb(var(--c-accent) / 0.35)' : 'rgb(var(--ink-border))'}`
-                      }}
-                    >
-                      <span
-                        style={{
-                          width: 16,
-                          height: 16,
-                          borderRadius: '50%',
-                          flexShrink: 0,
-                          border: `1.5px solid ${on ? 'rgb(var(--c-accent))' : 'rgb(var(--ink-fg-3))'}`,
-                          display: 'grid',
-                          placeItems: 'center'
-                        }}
-                      >
-                        {on && (
-                          <span
-                            style={{
-                              width: 8,
-                              height: 8,
-                              borderRadius: '50%',
-                              background: 'rgb(var(--c-accent))'
-                            }}
-                          />
+              <Select value={model || undefined} onValueChange={setModel}>
+                <SelectTrigger>
+                  <SelectValue placeholder={t('agents.config.model')} />
+                </SelectTrigger>
+                <SelectContent>
+                  {(model && !enabledModels.includes(model)
+                    ? [...enabledModels, model]
+                    : enabledModels
+                  ).map((id) => {
+                    const isOrphan = !enabledModels.includes(id)
+                    return (
+                      <SelectItem key={id} value={id}>
+                        {id}
+                        {isOrphan && (
+                          <span style={{ color: 'rgb(var(--ink-fg-3))', marginLeft: 6 }}>
+                            {t('settings.ai.enabledModels.notEnabled', {
+                              defaultValue: '（未启用）'
+                            })}
+                          </span>
                         )}
-                      </span>
-                      <div style={{ flex: 1 }}>
-                        <div
-                          style={{ fontSize: 13.5, fontWeight: 500, color: 'rgb(var(--ink-fg))' }}
-                        >
-                          {m.label}
-                        </div>
-                        <div
-                          style={{ fontSize: 11.5, color: 'rgb(var(--ink-fg-3))', marginTop: 1 }}
-                        >
-                          {m.hint}
-                        </div>
-                      </div>
-                    </button>
-                  )
-                })}
-              </div>
+                      </SelectItem>
+                    )
+                  })}
+                </SelectContent>
+              </Select>
             </Field>
 
             {/* kos enrich —— 仅 Gbrain 已配好时展示 */}
