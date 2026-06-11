@@ -15,9 +15,14 @@ import { createWriteStream, mkdirSync } from 'fs'
 
 // ---- electron app mock (isPackaged 可切换) ---------------------------------
 
-const appMock = { isPackaged: false } as { isPackaged: boolean; on: ReturnType<typeof vi.fn> }
-// before-quit 钩子收集器
+const appMock = { isPackaged: false } as {
+  isPackaged: boolean
+  on: ReturnType<typeof vi.fn>
+  exit: ReturnType<typeof vi.fn>
+}
+// before-quit 钩子收集器 + 退出清理后的 app.exit(0)
 appMock.on = vi.fn()
+appMock.exit = vi.fn()
 
 vi.mock('electron', () => ({ app: appMock }))
 
@@ -167,7 +172,11 @@ const {
   EXPECTED_DB_VERSION,
   REQUIRED_TABLES,
   DEFAULT_API_PORT,
+  DEFAULT_SSE_PORT,
   probeApiHealth,
+  killStaleBackendListeners,
+  registerBackendQuitHook,
+  resolveSsePort,
   _resetBackendLifecycleForTests
 } = await import('../../src/electron/main/backend_lifecycle')
 
@@ -196,6 +205,7 @@ beforeEach(() => {
 afterEach(() => {
   delete process.env.MAILAGENT_REMOTE_ACCESS_ENABLED
   delete process.env.MAILAGENT_API_PORT
+  delete process.env.SSE_LOCAL_PORT
   delete process.env.CF_AUDIENCE
   delete process.env.CF_TEAM_DOMAIN
   delete process.env.MAILAGENT_API_ALLOWED_EMAIL
@@ -973,5 +983,183 @@ describe('serve-api 崩溃自拉起 — 退避 re-spawn + 断路器', () => {
     await stopP
     await sleep(80) // 越过退避窗口
     expect(apiCount()).toBe(1) // 无第二次 serve-api spawn
+  })
+})
+
+// ===========================================================================
+// 退出确保杀死 — before-quit preventDefault + 等 stop() 完成再 app.exit
+// (修孤儿 serve: fire-and-forget SIGTERM 后主进程先死 → SIGKILL 升级代码消失)
+// ===========================================================================
+
+describe('registerBackendQuitHook — 退出清理 (preventDefault → stop → app.exit)', () => {
+  function beforeQuitHandler(): (event: { preventDefault: ReturnType<typeof vi.fn> }) => void {
+    const call = appMock.on.mock.calls.find((c) => c[0] === 'before-quit')
+    if (!call) throw new Error('before-quit handler not registered')
+    return call[1] as (event: { preventDefault: ReturnType<typeof vi.fn> }) => void
+  }
+
+  test('packaged: 拦住退出 → SIGTERM → 子进程退出后 app.exit(0)', async () => {
+    appMock.isPackaged = true
+    const mgr = registerBackendQuitHook()
+    mgr.start()
+    const child = lastChild!
+    const event = { preventDefault: vi.fn() }
+    beforeQuitHandler()(event)
+    expect(event.preventDefault).toHaveBeenCalled()
+    expect(child.kill).toHaveBeenCalledWith('SIGTERM')
+    expect(appMock.exit).not.toHaveBeenCalled() // 子进程未死透前不退出
+    child.emit('exit', 0, null)
+    await vi.waitFor(() => expect(appMock.exit).toHaveBeenCalledWith(0))
+  })
+
+  test('packaged: 子进程不理 SIGTERM → grace 超时升级 SIGKILL → exit 后才 app.exit', async () => {
+    vi.useFakeTimers()
+    appMock.isPackaged = true
+    const mgr = registerBackendQuitHook()
+    mgr.start()
+    const child = lastChild!
+    const event = { preventDefault: vi.fn() }
+    beforeQuitHandler()(event)
+    expect(child.kill).toHaveBeenCalledWith('SIGTERM')
+    await vi.advanceTimersByTimeAsync(5_000) // 默认 stopGraceMs
+    expect(child.kill).toHaveBeenCalledWith('SIGKILL')
+    expect(appMock.exit).not.toHaveBeenCalled()
+    child.emit('exit', null, 'SIGKILL') // 内核回收
+    await vi.advanceTimersByTimeAsync(1)
+    expect(appMock.exit).toHaveBeenCalledWith(0)
+    vi.useRealTimers()
+  })
+
+  test('packaged: 清理期间重复 Cmd+Q → 仍拦住, app.exit 只调一次', async () => {
+    appMock.isPackaged = true
+    const mgr = registerBackendQuitHook()
+    mgr.start()
+    const child = lastChild!
+    const e1 = { preventDefault: vi.fn() }
+    const e2 = { preventDefault: vi.fn() }
+    const handler = beforeQuitHandler()
+    handler(e1)
+    handler(e2) // 清理进行中再按 Cmd+Q
+    expect(e1.preventDefault).toHaveBeenCalled()
+    expect(e2.preventDefault).toHaveBeenCalled()
+    child.emit('exit', 0, null)
+    await vi.waitFor(() => expect(appMock.exit).toHaveBeenCalledTimes(1))
+  })
+
+  test('dev: 不拦截退出 (preventDefault / app.exit 都不调, 行为零变更)', async () => {
+    appMock.isPackaged = false
+    registerBackendQuitHook()
+    const event = { preventDefault: vi.fn() }
+    beforeQuitHandler()(event)
+    expect(event.preventDefault).not.toHaveBeenCalled()
+    // stop() 是 no-op, 给微任务一拍确认不会迟到调 exit。
+    await new Promise((r) => setTimeout(r, 10))
+    expect(appMock.exit).not.toHaveBeenCalled()
+  })
+})
+
+// ===========================================================================
+// 启动自愈 — spawn 前清理残留 mailagent 进程 (占 9200/8200 的孤儿)
+// ===========================================================================
+
+describe('启动自愈 — start() spawn 前扫残留端口', () => {
+  test('packaged: spawn 前以 [SSE, API] 端口调用 staleSweep', () => {
+    appMock.isPackaged = true
+    const sweep = vi.fn((_ports: number[]) => {
+      expect(spawnCalls).toHaveLength(0) // 必须先扫后 spawn
+      return []
+    })
+    const mgr = new BackendLifecycleManager({ staleSweep: sweep })
+    mgr.start()
+    expect(sweep).toHaveBeenCalledWith([DEFAULT_SSE_PORT, DEFAULT_API_PORT])
+    expect(spawnCalls.length).toBeGreaterThan(0)
+  })
+
+  test('dev: 不扫描', () => {
+    appMock.isPackaged = false
+    const sweep = vi.fn(() => [])
+    new BackendLifecycleManager({ staleSweep: sweep }).start()
+    expect(sweep).not.toHaveBeenCalled()
+  })
+
+  test('扫描抛错不阻断 spawn (自愈是 best-effort)', () => {
+    appMock.isPackaged = true
+    const sweep = vi.fn(() => {
+      throw new Error('lsof unavailable')
+    })
+    const mgr = new BackendLifecycleManager({ staleSweep: sweep })
+    mgr.start()
+    expect(spawnCalls.filter((c) => c.args[0] === 'serve')).toHaveLength(1)
+  })
+
+  test('resolveSsePort: 默认 9200, SSE_LOCAL_PORT 可覆盖', () => {
+    expect(resolveSsePort()).toBe(9200)
+    process.env.SSE_LOCAL_PORT = '9300'
+    expect(resolveSsePort()).toBe(9300)
+    process.env.SSE_LOCAL_PORT = 'not-a-number'
+    expect(resolveSsePort()).toBe(9200)
+  })
+})
+
+describe('killStaleBackendListeners — lsof/ps/kill 注入单测', () => {
+  const MAILAGENT_CMD =
+    '/Applications/MailAgent.app/Contents/Resources/python/bin/python3.11 -B -P -c ' +
+    "from src.cli.main import app; app(prog_name='mailagent') serve\n"
+
+  test('端口被孤儿 mailagent 占用 → SIGKILL + 等回收 + 返回 pid', () => {
+    let dead = false
+    const io = {
+      run: vi.fn((cmd: string) => {
+        if (cmd === 'lsof') return '1234\n'
+        if (cmd === 'ps') return MAILAGENT_CMD
+        return ''
+      }),
+      kill: vi.fn((pid: number, sig: NodeJS.Signals | number) => {
+        if (sig === 'SIGKILL') dead = true
+        else if (sig === 0 && dead) throw new Error('ESRCH') // 探活: 已死
+      }),
+      sleep: vi.fn()
+    }
+    expect(killStaleBackendListeners([9200], io)).toEqual([1234])
+    expect(io.kill).toHaveBeenCalledWith(1234, 'SIGKILL')
+  })
+
+  test('端口被非 mailagent 进程占用 → 不动它', () => {
+    const io = {
+      run: vi.fn((cmd: string) => (cmd === 'lsof' ? '4321\n' : '/usr/bin/some-other-server\n')),
+      kill: vi.fn(),
+      sleep: vi.fn()
+    }
+    expect(killStaleBackendListeners([9200], io)).toEqual([])
+    expect(io.kill).not.toHaveBeenCalledWith(4321, 'SIGKILL')
+  })
+
+  test('无监听者 (lsof 非零退出抛错) → 空结果不抛', () => {
+    const io = {
+      run: vi.fn(() => {
+        throw new Error('lsof exit 1')
+      }),
+      kill: vi.fn(),
+      sleep: vi.fn()
+    }
+    expect(killStaleBackendListeners([9200, 8200], io)).toEqual([])
+    expect(io.kill).not.toHaveBeenCalled()
+  })
+
+  test('两端口各有一个孤儿 → 都清掉; 端口去重', () => {
+    const pidByPort: Record<string, string> = { 'tcp:9200': '111\n', 'tcp:8200': '222\n' }
+    const io = {
+      run: vi.fn((cmd: string, args: string[]) => {
+        if (cmd === 'lsof') return pidByPort[args[1]] ?? ''
+        return MAILAGENT_CMD
+      }),
+      kill: vi.fn((_pid: number, sig: NodeJS.Signals | number) => {
+        if (sig === 0) throw new Error('ESRCH') // kill 后立即视为已回收
+      }),
+      sleep: vi.fn()
+    }
+    expect(killStaleBackendListeners([9200, 8200, 9200], io)).toEqual([111, 222])
+    // 9200 去重: lsof 只对 9200/8200 各跑一次
+    expect(io.run.mock.calls.filter((c) => c[0] === 'lsof')).toHaveLength(2)
   })
 })

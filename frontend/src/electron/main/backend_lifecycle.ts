@@ -34,7 +34,7 @@
 // serve-api (gate off) 时行为与改造前逐字节一致。cloudflared **不**纳入 lifecycle (依赖
 // 用户环境态 + 该独立于 Electron 常驻, 由 runbook 教用户 pm2 托管)。
 
-import { spawn, type ChildProcess } from 'child_process'
+import { execFileSync, spawn, type ChildProcess } from 'child_process'
 import { app } from 'electron'
 import { createWriteStream, existsSync, mkdirSync, type WriteStream } from 'fs'
 import { get as httpGet } from 'http'
@@ -231,6 +231,8 @@ export interface LifecycleOptions {
   crashBackoffMs?: number[]
   /** crash-loop 断路器上限: 连续崩溃达此数 (中间无一次 ready) → 放弃自拉起 (可注入; 默认 MAX_CRASH_RESTARTS)。 */
   maxCrashRestarts?: number
+  /** 启动自愈扫描 (可注入便于单测; 默认 killStaleBackendListeners → 真实 lsof/kill)。 */
+  staleSweep?: (ports: number[]) => number[]
 }
 
 export type BackendState = 'idle' | 'starting' | 'ready' | 'stopped' | 'failed'
@@ -295,6 +297,114 @@ export function resolveApiPort(): number {
   return Number.isFinite(n) && n > 0 ? n : DEFAULT_API_PORT
 }
 
+/** serve 内嵌 SSE server 的默认端口 (与 src/config.py `sse_local_port` env=SSE_LOCAL_PORT 一致)。 */
+export const DEFAULT_SSE_PORT = 9200
+
+/** serve 的 SSE 端口 (env SSE_LOCAL_PORT, 默认 9200) — 启动自愈扫描用。 */
+export function resolveSsePort(): number {
+  const raw = process.env.SSE_LOCAL_PORT
+  const n = raw != null ? Number.parseInt(raw, 10) : NaN
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_SSE_PORT
+}
+
+// ---------------------------------------------------------------------------
+// 启动自愈 — 清理上一次退出残留的孤儿 mailagent 进程 (占 9200/8200)
+// ---------------------------------------------------------------------------
+
+/** 残留进程识别标记: 打包 bin/mailagent wrapper 经 `python3.11 -c "...app(prog_name='mailagent')"`
+ *  exec, 此串只出现在我们 spawn 的后端进程命令行里, 不会误伤其他占端口的程序。 */
+const STALE_CMD_MARKER = "prog_name='mailagent'"
+
+/** SIGKILL 后等内核回收的轮询: 间隔 100ms, 上限 20 次 (2s)。 */
+const STALE_KILL_POLL_MS = 100
+const STALE_KILL_POLL_MAX = 20
+
+/** start() 是同步路径, 等进程回收用 Atomics.wait 同步睡 (Node 主线程允许; 单次 ≤100ms)。 */
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+}
+
+/** 可注入的系统调用面 (单测不碰真实进程)。 */
+export interface StaleSweepIO {
+  /** 跑外部命令取 stdout。默认 execFileSync; 命令非零退出 (lsof 无监听者是常态) 会 throw。 */
+  run?: (cmd: string, args: string[]) => string
+  /** 发信号 (含 signal=0 探活)。默认 process.kill。 */
+  kill?: (pid: number, signal: NodeJS.Signals | number) => void
+  sleep?: (ms: number) => void
+}
+
+/**
+ * 启动自愈: 扫描 ports 上 LISTEN 的残留 mailagent 进程并 SIGKILL。
+ *
+ * 为什么会有残留: 历史版本 before-quit 对 `mgr.stop()` fire-and-forget —— SIGTERM 刚发出
+ * Electron 主进程就退出了, 5s 后的 SIGKILL 升级代码随主进程一起消失; 而 serve 的 asyncio
+ * 优雅关闭实测 >11s, 于是孤儿 reparent 到 launchd 继续占 9200 → 新 serve SSE bind 失败
+ * 降级 polling (src/service.py 只 warning 不重试) + 双进程同写 sync_store.db。
+ *
+ * 为什么直接 SIGKILL 不先 SIGTERM: 孤儿的优雅关闭 >11s, 启动路径等不起; 它本来就是
+ * 上次退出该死未死的残留, SQLite WAL 对 SIGKILL 崩溃安全。
+ *
+ * 只杀命令行含 STALE_CMD_MARKER 的进程 —— 端口被无关程序占用时不动它 (留给 serve 自己
+ * 的 bind 失败 warning, 不替别人的进程做决定)。
+ *
+ * @returns 实际杀掉的 pid 列表 (日志/断言用)。
+ */
+export function killStaleBackendListeners(ports: number[], io: StaleSweepIO = {}): number[] {
+  const run =
+    io.run ??
+    ((cmd: string, args: string[]) =>
+      execFileSync(cmd, args, { encoding: 'utf8', timeout: 5_000 }) as string)
+  const kill = io.kill ?? ((pid: number, sig: NodeJS.Signals | number) => process.kill(pid, sig))
+  const sleep = io.sleep ?? sleepSync
+  const alive = (pid: number): boolean => {
+    try {
+      kill(pid, 0)
+      return true
+    } catch {
+      return false
+    }
+  }
+  const killed: number[] = []
+  for (const port of [...new Set(ports)]) {
+    let out = ''
+    try {
+      // -ti: 只输出 pid; -sTCP:LISTEN: 只看监听者 (连过来的 client 不算)。
+      out = run('lsof', ['-ti', `tcp:${port}`, '-sTCP:LISTEN'])
+    } catch {
+      continue // 无监听者 (lsof exit 1, 常态) / lsof 不可用 → 该端口跳过
+    }
+    for (const line of out.split('\n')) {
+      const pid = Number.parseInt(line.trim(), 10)
+      if (!Number.isFinite(pid) || pid <= 0 || pid === process.pid) continue
+      let cmd = ''
+      try {
+        cmd = run('ps', ['-o', 'command=', '-p', String(pid)])
+      } catch {
+        continue // 进程已消失
+      }
+      if (!cmd.includes(STALE_CMD_MARKER)) {
+        console.warn(
+          `[backend_lifecycle] 端口 ${port} 被非 mailagent 进程占用 (pid=${pid}), 不清理; ` +
+            'serve 将按现状降级 (SSE→polling)。'
+        )
+        continue
+      }
+      try {
+        kill(pid, 'SIGKILL')
+      } catch {
+        continue // 已退出 / 无权限
+      }
+      // 等内核真正回收 (毫秒级) 再继续 —— 否则随后 spawn 的新 serve 仍可能撞 bind。
+      for (let i = 0; i < STALE_KILL_POLL_MAX && alive(pid); i++) sleep(STALE_KILL_POLL_MS)
+      killed.push(pid)
+      console.warn(
+        `[backend_lifecycle] 启动自愈: SIGKILL 残留 mailagent 进程 pid=${pid} (占端口 ${port})`
+      )
+    }
+  }
+  return killed
+}
+
 /**
  * 打包后 web SPA 资源目录 (electron-builder extraResources `to: web` → Resources/web)。
  * serve-api 的 app.py `_SPA_DIR` 优先读此 env, 命中则 mount /app 静态 SPA (远程 Web);
@@ -347,6 +457,7 @@ export class BackendLifecycleManager {
   private readonly apiProbe: (port: number) => Promise<boolean>
   private readonly crashBackoffMs: number[]
   private readonly maxCrashRestarts: number
+  private readonly staleSweep: (ports: number[]) => number[]
 
   constructor(opts: LifecycleOptions = {}) {
     this.pollIntervalMs = opts.pollIntervalMs ?? 500
@@ -357,6 +468,7 @@ export class BackendLifecycleManager {
     this.apiProbe = opts.apiProbe ?? probeApiHealth
     this.crashBackoffMs = opts.crashBackoffMs ?? CRASH_RESTART_BACKOFF_MS
     this.maxCrashRestarts = opts.maxCrashRestarts ?? MAX_CRASH_RESTARTS
+    this.staleSweep = opts.staleSweep ?? killStaleBackendListeners
   }
 
   /**
@@ -409,6 +521,13 @@ export class BackendLifecycleManager {
     if (!this.safeIsPackaged()) {
       // dev / 服务器部署: 后端由 pm2 托管, 不接管。
       return
+    }
+    // 启动自愈: 上次退出可能留下孤儿 mailagent (占 9200/8200), 先清掉再 spawn,
+    // 防新 serve SSE bind 失败降级 polling + 双进程同写 DB。扫描失败不阻断启动。
+    try {
+      this.staleSweep([resolveSsePort(), resolveApiPort()])
+    } catch (err) {
+      console.warn('[backend_lifecycle] 启动自愈扫描失败 (继续 spawn)', err)
     }
     const dataRoot = resolveDataRoot()
     const baseEnv = this.buildBaseEnv(dataRoot)
@@ -780,18 +899,45 @@ export function getBackendLifecycle(): BackendLifecycleManager {
  */
 let _quitHookRegistered = false
 
+/** 退出清理状态机: idle → cleaning (preventDefault 拦住 quit, stop() 进行中) → done (app.exit)。 */
+let _quitCleanup: 'idle' | 'cleaning' | 'done' = 'idle'
+
+/** 退出清理硬上限: stop() 自身有界 (grace 5s + SIGKILL 等待 2s), 此值留 margin。
+ *  到点即 app.exit —— 宁可极端情况下留一个濒死进程, 也不让 Cmd+Q 永久挂住。 */
+const QUIT_CLEANUP_HARD_CAP_MS = 8_000
+
 /**
- * 只注册 before-quit SIGTERM 钩子 (幂等), 不 start。供 onboarding 场景: 新用户开窗时
+ * 只注册 before-quit 退出清理钩子 (幂等), 不 start。供 onboarding 场景: 新用户开窗时
  * 还没配置、不能 start 后端, 但要先挂好退出清理钩子; 待 onboarding:complete 写完 .env
  * 再调 mgr.start()。dev 模式 stop() 内部 no-op, 钩子无害。
+ *
+ * 🔴 打包模式必须 preventDefault + 等 stop() 完成再 app.exit —— 历史 bug: 这里曾
+ * `void mgr.stop()` fire-and-forget, SIGTERM 刚发出 Electron 主进程就退出, 5s 后的
+ * SIGKILL 升级代码随主进程消失; serve 的 asyncio 优雅关闭实测 >11s 远超 SIGTERM→exit
+ * 窗口 → 孤儿 reparent 到 launchd 继续占 9200 (下次启动 SSE bind 失败 + 双写 DB)。
+ * app.exit() 不再触发 before-quit, 不会递归。清理期间用户再按 Cmd+Q → 继续拦住
+ * (cleaning 态), 由进行中的 stop() 收尾后统一 exit。
  */
 export function registerBackendQuitHook(): BackendLifecycleManager {
   const mgr = getBackendLifecycle()
   if (!_quitHookRegistered) {
     _quitHookRegistered = true
-    app.on('before-quit', () => {
-      // fire-and-forget: before-quit 不等 async; SIGTERM 已发出, OS 会回收。
-      void mgr.stop()
+    app.on('before-quit', (event) => {
+      if (!mgr.isManaged()) {
+        // dev: 无托管子进程, stop() 是快速 no-op, 不拦 quit (行为零变更)。
+        void mgr.stop()
+        return
+      }
+      if (_quitCleanup === 'done') return // 清理已完成 → 放行 quit
+      event.preventDefault()
+      if (_quitCleanup === 'cleaning') return // 清理进行中 (重复 Cmd+Q) → 继续拦住
+      _quitCleanup = 'cleaning'
+      void Promise.race([mgr.stop(), delay(QUIT_CLEANUP_HARD_CAP_MS)])
+        .catch((err) => console.error('[backend_lifecycle] 退出清理失败 (仍退出)', err))
+        .finally(() => {
+          _quitCleanup = 'done'
+          app.exit(0)
+        })
     })
   }
   return mgr
@@ -806,4 +952,5 @@ export function registerBackendLifecycle(): BackendLifecycleManager {
 export function _resetBackendLifecycleForTests(): void {
   _manager = null
   _quitHookRegistered = false
+  _quitCleanup = 'idle'
 }
