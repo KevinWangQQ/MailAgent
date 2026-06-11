@@ -370,9 +370,7 @@ describe('searchEmails smart mode (PR-2a)', () => {
   test('smart mode equivalence with raw for plain latin', () => {
     const smart = handlers.searchEmails({ query: 'redis' })
     const raw = handlers.searchEmails({ query: 'redis', mode: 'raw' })
-    expect(smart.items.map((i) => i.internal_id)).toEqual(
-      raw.items.map((i) => i.internal_id)
-    )
+    expect(smart.items.map((i) => i.internal_id)).toEqual(raw.items.map((i) => i.internal_id))
     // 单 token latin → transform 不变化, 没 transformed_query
     expect(smart.transformed_query).toBeUndefined()
   })
@@ -456,9 +454,11 @@ describe('listMailboxes', () => {
     // Sprint 10 user-acceptance shape: listMailboxes now returns flagged +
     // failed alongside total + unread so the Sidebar virtual entries can
     // surface real counts (previous hardcoded 0).
+    // attention (「需关注」): 101 labels=紧急+需要回复, 102 labels=重要+需要决策
+    // (主表 ai_* 为 NULL → labels_json fallback) → 收件箱 2; 103 无 LLM → 不计。
     expect(rows).toEqual([
-      { mailbox: '收件箱', total: 3, unread: 2, flagged: 1, failed: 1 },
-      { mailbox: '发件箱', total: 1, unread: 0, flagged: 0, failed: 0 }
+      { mailbox: '收件箱', total: 3, unread: 2, flagged: 1, failed: 1, attention: 2 },
+      { mailbox: '发件箱', total: 1, unread: 0, flagged: 0, failed: 0, attention: 0 }
     ])
   })
 
@@ -563,5 +563,191 @@ describe('getAIFields', () => {
 
   test('returns null for a missing internal_id', () => {
     expect(handlers.getAIFields(99_999)).toBeNull()
+  })
+})
+
+describe('listEmailsEnriched attention view (「需关注」)', () => {
+  // 判定 = 日报 is_attention (src/reports/data.py) 的 SQL 化:
+  //   进入: is_pinned=1 OR (ai_priority ∈ {🔴 紧急, 🟡 重要} AND ai_action ∈ 需动作集)
+  //   排除: ①发件箱 ②已回复 (同 thread 有更晚发件箱邮件) ③processing_status='已完成'
+  // 种子行 9xx 自包含, afterAll 清理, 不污染其它 describe。
+  beforeAll(() => {
+    const ins = fixtureDb.prepare(`
+      INSERT INTO email_metadata
+        (internal_id, message_id, thread_id, subject, sender, date_received,
+         mailbox, sync_status, is_pinned, ai_priority, ai_action, processing_status)
+      VALUES (@id, @mid, @tid, @subject, 'x@example.com', @date,
+              @mailbox, 'synced', @pinned, @pri, @act, @proc)
+    `)
+    const rows = [
+      // 901 紧急+需要回复 (主表列) → 进
+      {
+        id: 901,
+        tid: 'th-att-1',
+        date: '2026-06-01T10:00:00+08:00',
+        mailbox: '收件箱',
+        pinned: 0,
+        pri: '🔴 紧急',
+        act: '需要回复',
+        proc: null
+      },
+      // 902 紧急+需要回复 但 912 是同 thread 更晚的发件箱邮件 → 已回复, 排除
+      {
+        id: 902,
+        tid: 'th-att-2',
+        date: '2026-06-01T10:00:00+08:00',
+        mailbox: '收件箱',
+        pinned: 0,
+        pri: '🔴 紧急',
+        act: '需要回复',
+        proc: null
+      },
+      {
+        id: 912,
+        tid: 'th-att-2',
+        date: '2026-06-02T10:00:00+08:00',
+        mailbox: '发件箱',
+        pinned: 0,
+        pri: null,
+        act: null,
+        proc: null
+      },
+      // 903 紧急+需要回复, 913 同 thread 但发件**更早** (不是回复) → 进
+      {
+        id: 903,
+        tid: 'th-att-3',
+        date: '2026-06-03T10:00:00+08:00',
+        mailbox: '收件箱',
+        pinned: 0,
+        pri: '🟡 重要',
+        act: '需要跟进',
+        proc: null
+      },
+      {
+        id: 913,
+        tid: 'th-att-3',
+        date: '2026-06-01T08:00:00+08:00',
+        mailbox: '发件箱',
+        pinned: 0,
+        pri: null,
+        act: null,
+        proc: null
+      },
+      // 904 置顶 (无 AI 字段) → 进
+      {
+        id: 904,
+        tid: 'th-att-4',
+        date: '2026-06-01T09:00:00+08:00',
+        mailbox: '收件箱',
+        pinned: 1,
+        pri: null,
+        act: null,
+        proc: null
+      },
+      // 905 置顶但已完成 → 排除
+      {
+        id: 905,
+        tid: 'th-att-5',
+        date: '2026-06-01T09:00:00+08:00',
+        mailbox: '收件箱',
+        pinned: 1,
+        pri: null,
+        act: null,
+        proc: '已完成'
+      },
+      // 906 发件箱里的紧急邮件 → 排除 (发件箱)
+      {
+        id: 906,
+        tid: 'th-att-6',
+        date: '2026-06-01T09:00:00+08:00',
+        mailbox: '发件箱',
+        pinned: 0,
+        pri: '🔴 紧急',
+        act: '需要回复',
+        proc: null
+      },
+      // 907 紧急但 action=仅供参考 (不在需动作集) → 排除
+      {
+        id: 907,
+        tid: 'th-att-7',
+        date: '2026-06-01T09:00:00+08:00',
+        mailbox: '收件箱',
+        pinned: 0,
+        pri: '🔴 紧急',
+        act: '仅供参考',
+        proc: null
+      },
+      // 908 一般优先级+需要回复 (不在紧急集) → 排除
+      {
+        id: 908,
+        tid: 'th-att-8',
+        date: '2026-06-01T09:00:00+08:00',
+        mailbox: '收件箱',
+        pinned: 0,
+        pri: '🟢 一般',
+        act: '需要回复',
+        proc: null
+      }
+    ]
+    const seed = fixtureDb.transaction(() => {
+      for (const r of rows)
+        ins.run({ ...r, mid: `<att-${r.id}@example.com>`, subject: `att ${r.id}` })
+    })
+    seed()
+  })
+
+  afterAll(() => {
+    fixtureDb.prepare('DELETE FROM email_metadata WHERE internal_id >= 900').run()
+  })
+
+  test('紧急×需动作进入、已回复/发件箱/已完成/非命中组合排除', () => {
+    const ids = new Set(
+      handlers.listEmailsEnriched({ attention: true, limit: 100 }).map((e) => e.internal_id)
+    )
+    expect(ids.has(901)).toBe(true) // 紧急+需要回复
+    expect(ids.has(903)).toBe(true) // 重要+需要跟进, 发件更早不算回复
+    expect(ids.has(904)).toBe(true) // 置顶
+    expect(ids.has(902)).toBe(false) // 已回复
+    expect(ids.has(905)).toBe(false) // 置顶但已完成
+    expect(ids.has(906)).toBe(false) // 发件箱
+    expect(ids.has(907)).toBe(false) // action 不在需动作集
+    expect(ids.has(908)).toBe(false) // priority 不在紧急集
+    expect(ids.has(912)).toBe(false)
+    expect(ids.has(913)).toBe(false)
+  })
+
+  test('labels_json fallback: 主表列为空时从 llm_processing 判定 (存量未 backfill)', () => {
+    const ids = new Set(
+      handlers.listEmailsEnriched({ attention: true, limit: 100 }).map((e) => e.internal_id)
+    )
+    // fixture 101 = labels {priority: 🔴 紧急, action_type: 需要回复}, 主表 ai_* 为 NULL
+    expect(ids.has(101)).toBe(true)
+    // fixture 102 = labels {priority: 🟡 重要, action_type: 需要决策}
+    expect(ids.has(102)).toBe(true)
+    // fixture 103 无 LLM run → 排除; 201 发件箱+已完成 → 排除
+    expect(ids.has(103)).toBe(false)
+    expect(ids.has(201)).toBe(false)
+  })
+
+  test('attention 与其它 filter 叠加 (AND 语义)', () => {
+    const unreadOnly = handlers.listEmailsEnriched({ attention: true, isRead: false, limit: 100 })
+    for (const e of unreadOnly) expect(e.is_read).toBe(false)
+    const ids = new Set(unreadOnly.map((e) => e.internal_id))
+    expect(ids.has(101)).toBe(true) // 101 unread
+    expect(ids.has(102)).toBe(false) // 102 已读, 被 isRead=false 滤掉
+  })
+
+  test('listMailboxes attention 计数与列表行数同判定', () => {
+    const listIds = handlers
+      .listEmailsEnriched({ attention: true, limit: 100 })
+      .map((e) => e.internal_id)
+    const summaries = handlers.listMailboxes()
+    const totalAttention = summaries.reduce((sum, m) => sum + (m.attention ?? 0), 0)
+    expect(totalAttention).toBe(listIds.length)
+    const inbox = summaries.find((m) => m.mailbox === '收件箱')
+    // 101, 102, 901, 903, 904 全在收件箱
+    expect(inbox?.attention).toBe(5)
+    const sent = summaries.find((m) => m.mailbox === '发件箱')
+    expect(sent?.attention).toBe(0)
   })
 })

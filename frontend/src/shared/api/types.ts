@@ -120,6 +120,10 @@ export interface MailboxSummary {
   /** Sum of `sync_status IN ('failed', 'dead_letter')`. Powers the
    *  "Failed" filter chip + future Sidebar entry. */
   failed: number
+  /** 「需关注」计数 — 与 listEnriched({attention:true}) 同一 SQL 判定, Powers
+   *  the Sidebar "需关注" virtual entry. Optional: 旧版 serve-api (远程 web)
+   *  可能不返回该字段。 */
+  attention?: number
 }
 
 export interface AIFields {
@@ -155,6 +159,10 @@ export interface ListOpts {
   /** Restrict to a specific set of internal_id values. 配合其他 filter
    *  叠加 (AND), 主要给 pinned-supplement / 已知 id 批量取 enriched 用. */
   internalIds?: number[]
+  /** 「需关注」视图 — 日报 is_attention 判定的实时版: is_pinned=1 OR
+   *  (ai_priority ∈ 紧急集 AND ai_action ∈ 需动作集)，排除发件箱/已回复/已完成。
+   *  仅 listEnriched 支持 (依赖 llm_processing JOIN)。 */
+  attention?: boolean
   limit?: number
   offset?: number
 }

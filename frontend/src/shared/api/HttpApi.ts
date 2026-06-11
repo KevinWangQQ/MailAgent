@@ -132,6 +132,7 @@ export class HttpApi implements MailApi {
       isFlagged: opts.isFlagged,
       hasNotion: opts.hasNotion,
       internalIds: opts.internalIds,
+      attention: opts.attention,
       limit: opts.limit,
       offset: opts.offset
     }

@@ -283,6 +283,100 @@ def _build_enriched_where(opts: dict[str, Any]) -> tuple[list[str], list[Any]]:
 
 
 # ===========================================================================
+# 「需关注」(attention) 视图判定 — 镜像 Electron handlers/email.ts 的
+# ATTENTION_WHERE_SQL。复用日报 is_attention() 语义 (src/reports/data.py):
+#   进入 = is_pinned=1 OR (priority ∈ 紧急集 AND action ∈ 需动作集)
+#   排除 = ①发件箱 ②已回复 (同 thread 有更晚发件箱邮件) ③processing_status='已完成'
+# 常量与 src/notify/island_dispatch.py (URGENT_PRIORITY_LABELS / ACTION_NEEDS_FLAG)
+# 及 src/reports/data.py (_SENT_MAILBOXES) 保持一致 — 不直接 import 是避免 api
+# router 拉起 notify 依赖链 (与本文件 ai_mapping 手抄同款纪律), 改那边时同步改这里。
+# ===========================================================================
+
+_ATTENTION_SENT_MAILBOXES = ("发件箱", "已发送邮件", "Sent", "Sent Messages", "Sent Items")
+_ATTENTION_URGENT_PRIORITIES = ("🔴 紧急", "🟡 重要")
+_ATTENTION_NEED_ACTIONS = (
+    "需要回复", "需要决策", "需要Review", "需要会议", "需要跟进", "等待响应",
+)
+
+
+def _attention_where(
+    meta_cols: set, priority_expr: str, action_expr: str
+) -> tuple[str, list]:
+    """attention 条件 SQL (m./l. alias 作用域) + 绑定参数。
+
+    ``priority_expr`` / ``action_expr`` 由调用方按 schema 探测结果构好 (主表列
+    COALESCE labels_json fallback / 降级 NULL)，与 enriched 列表的 chip 同源 —
+    保证「看到的优先级」与「进不进视图」一致。降级 schema: 无 is_pinned 列 →
+    置顶分支恒假; 无 processing_status 列 → 不做已完成排除; priority/action 全
+    NULL → IN (...) 恒假, 只剩置顶路径。
+
+    已回复判定: date_received 是**各邮件原始时区**的 ISO 串 (data.py 同款警告,
+    不能字符串比较) → julianday() 归一真实时刻; ``m.thread_id != ''`` 守卫防
+    空串线程互相误配。
+    """
+    sent_ph = ", ".join("?" * len(_ATTENTION_SENT_MAILBOXES))
+    urgent_ph = ", ".join("?" * len(_ATTENTION_URGENT_PRIORITIES))
+    action_ph = ", ".join("?" * len(_ATTENTION_NEED_ACTIONS))
+    pinned_expr = "m.is_pinned = 1" if "is_pinned" in meta_cols else "0 = 1"
+    done_guard = (
+        "(m.processing_status IS NULL OR m.processing_status != '已完成')"
+        if "processing_status" in meta_cols
+        else "1 = 1"
+    )
+    clause = f"""(
+        COALESCE(m.mailbox, '') NOT IN ({sent_ph})
+        AND {done_guard}
+        AND ({pinned_expr}
+             OR ({priority_expr} IN ({urgent_ph})
+                 AND {action_expr} IN ({action_ph})))
+        AND NOT EXISTS (
+            SELECT 1 FROM email_metadata s
+             WHERE m.thread_id IS NOT NULL AND m.thread_id != ''
+               AND s.thread_id = m.thread_id
+               AND s.mailbox IN ({sent_ph})
+               AND julianday(s.date_received) >= julianday(m.date_received)
+        )
+    )"""
+    params = [
+        *_ATTENTION_SENT_MAILBOXES,
+        *_ATTENTION_URGENT_PRIORITIES,
+        *_ATTENTION_NEED_ACTIONS,
+        *_ATTENTION_SENT_MAILBOXES,
+    ]
+    return clause, params
+
+
+def _priority_action_exprs(meta_cols: set, has_llm: bool) -> tuple[str, str]:
+    """priority/action 的 SELECT 表达式 — 主表 v14 列 COALESCE fallback labels_json。
+
+    list-enriched 与 /mailboxes attention 计数共用, 保证两处判定同源。
+    缺列/表时降级 (labels NULL / 无 COALESCE)。
+    """
+    if has_llm:
+        labels_priority = (
+            "CASE WHEN json_valid(l.labels_json) "
+            "THEN json_extract(l.labels_json, '$.priority') END"
+        )
+        labels_action = (
+            "CASE WHEN json_valid(l.labels_json) "
+            "THEN json_extract(l.labels_json, '$.action_type') END"
+        )
+    else:
+        labels_priority = labels_action = "NULL"
+    priority_expr = (
+        f"COALESCE(m.ai_priority, {labels_priority})"
+        if "ai_priority" in meta_cols
+        else labels_priority
+    )
+    action_expr = (
+        f"COALESCE(m.ai_action, {labels_action})"
+        if "ai_action" in meta_cols
+        else labels_action
+    )
+    return priority_expr, action_expr
+
+
+# ===========================================================================
 # GET /api/email/list-enriched — listEnriched (收件箱主列表，本 sprint 必须)
 # ===========================================================================
 
@@ -304,6 +398,10 @@ async def list_enriched(
     is_read: Optional[bool] = Query(None, alias="isRead"),
     is_flagged: Optional[bool] = Query(None, alias="isFlagged"),
     has_notion: Optional[bool] = Query(None, alias="hasNotion"),
+    attention: Optional[bool] = Query(
+        None,
+        description="「需关注」视图 — 置顶 OR 紧急×需动作, 排除发件箱/已回复/已完成",
+    ),
     internal_ids: Optional[str] = Query(
         None,
         alias="internalIds",
@@ -355,8 +453,6 @@ async def list_enriched(
     meta_cols: set[str] = schema["meta_cols"]
     has_llm: bool = schema["has_llm"]
     has_processing = "processing_status" in meta_cols
-    has_ai_priority = "ai_priority" in meta_cols
-    has_ai_action = "ai_action" in meta_cols
 
     clauses, params = _build_enriched_where(opts)
 
@@ -365,6 +461,17 @@ async def list_enriched(
     # 过滤行)，与 listMailboxes 计数 SQL 同口径，避免 sidebar badge 与列表数错位。
     if status is None:
         clauses.append("m.sync_status != 'skipped'")
+
+    # priority/action 表达式 (主表 v14 列 COALESCE fallback labels_json) — SELECT
+    # 列与 attention WHERE 共用同一对, 保证 chip 显示与视图判定一致。
+    priority_expr, action_expr = _priority_action_exprs(meta_cols, has_llm)
+
+    # 「需关注」过滤 — 镜像 handlers/email.ts buildEnrichedWhere 的 attention 分支。
+    if attention:
+        att_clause, att_params = _attention_where(meta_cols, priority_expr, action_expr)
+        clauses.append(att_clause)
+        params.extend(att_params)
+
     where_sql = ("WHERE " + " AND ".join(clauses)) if clauses else ""
 
     # m. 限定的 list-item 列 (LEFT JOIN 后裸名歧义) + enriched 额外列。
@@ -392,27 +499,8 @@ async def list_enriched(
             "CASE WHEN json_valid(l.labels_json) "
             "THEN json_extract(l.labels_json, '$.category') END"
         )
-        labels_priority = (
-            "CASE WHEN json_valid(l.labels_json) "
-            "THEN json_extract(l.labels_json, '$.priority') END"
-        )
-        labels_action = (
-            "CASE WHEN json_valid(l.labels_json) "
-            "THEN json_extract(l.labels_json, '$.action_type') END"
-        )
     else:
-        lang_expr = category_expr = labels_priority = labels_action = "NULL"
-
-    priority_expr = (
-        f"COALESCE(m.ai_priority, {labels_priority})"
-        if has_ai_priority
-        else labels_priority
-    )
-    action_expr = (
-        f"COALESCE(m.ai_action, {labels_action})"
-        if has_ai_action
-        else labels_action
-    )
+        lang_expr = category_expr = "NULL"
 
     extra_cols = (
         "(b.internal_id IS NOT NULL) AS has_body_raw, "
@@ -498,28 +586,43 @@ async def list_mailboxes(
     request: Request,
     repo: "EmailRepository" = Depends(get_repository),
 ):
-    """mailbox 维度汇总 — total/unread/flagged/failed (sidebar 虚拟条目用)。
+    """mailbox 维度汇总 — total/unread/flagged/failed/attention (sidebar 虚拟条目用)。
 
-    data = MailboxSummary[] (types.ts): {mailbox, total, unread, flagged, failed}。
-    1:1 镜像 handlers/email.ts::listMailboxes —— 排除 ``skipped`` (口径对齐
-    list-enriched，否则 sidebar 数 ≠ 列表数) + NULL/空 mailbox。total DESC 排序。
+    data = MailboxSummary[] (types.ts): {mailbox, total, unread, flagged, failed,
+    attention}。1:1 镜像 handlers/email.ts::listMailboxes —— 排除 ``skipped``
+    (口径对齐 list-enriched，否则 sidebar 数 ≠ 列表数) + NULL/空 mailbox。
+    total DESC 排序。attention 与 list-enriched?attention=true 同一 SQL 判定
+    (badge 数 = 列表行数)，为此 email_metadata 取 alias m + LEFT JOIN
+    llm_processing (1:1, 不影响 GROUP BY 基数；缺表时降级不 JOIN)。
     """
-    sql = """
-        SELECT mailbox,
+    schema = _probe_schema(repo)
+    meta_cols: set[str] = schema["meta_cols"]
+    has_llm: bool = schema["has_llm"]
+    priority_expr, action_expr = _priority_action_exprs(meta_cols, has_llm)
+    att_clause, att_params = _attention_where(meta_cols, priority_expr, action_expr)
+    llm_join = (
+        "LEFT JOIN llm_processing l ON l.internal_id = m.internal_id"
+        if has_llm
+        else ""
+    )
+    sql = f"""
+        SELECT m.mailbox AS mailbox,
                COUNT(*) AS total,
-               SUM(CASE WHEN is_read = 0 THEN 1 ELSE 0 END) AS unread,
-               SUM(CASE WHEN is_flagged = 1 THEN 1 ELSE 0 END) AS flagged,
-               SUM(CASE WHEN sync_status IN ('failed', 'dead_letter')
-                        THEN 1 ELSE 0 END) AS failed
-          FROM email_metadata
-         WHERE mailbox IS NOT NULL AND mailbox != ''
-           AND sync_status != 'skipped'
-         GROUP BY mailbox
+               SUM(CASE WHEN m.is_read = 0 THEN 1 ELSE 0 END) AS unread,
+               SUM(CASE WHEN m.is_flagged = 1 THEN 1 ELSE 0 END) AS flagged,
+               SUM(CASE WHEN m.sync_status IN ('failed', 'dead_letter')
+                        THEN 1 ELSE 0 END) AS failed,
+               SUM(CASE WHEN {att_clause} THEN 1 ELSE 0 END) AS attention
+          FROM email_metadata m
+          {llm_join}
+         WHERE m.mailbox IS NOT NULL AND m.mailbox != ''
+           AND m.sync_status != 'skipped'
+         GROUP BY m.mailbox
          ORDER BY total DESC
     """
     conn = repo._connect()
     try:
-        rows = conn.execute(sql).fetchall()
+        rows = conn.execute(sql, att_params).fetchall()
     finally:
         conn.close()
 
@@ -530,6 +633,7 @@ async def list_mailboxes(
             "unread": r["unread"] or 0,
             "flagged": r["flagged"] or 0,
             "failed": r["failed"] or 0,
+            "attention": r["attention"] or 0,
         }
         for r in rows
         if r["mailbox"]

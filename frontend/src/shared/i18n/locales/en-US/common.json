@@ -405,6 +405,7 @@
     "inbox": "Inbox",
     "outbox": "Outbox",
     "flagged": "Flagged",
+    "attention": "Attention",
     "allMail": "All mail",
     "aiSessions": "AI sessions",
     "adminKanban": "Admin",

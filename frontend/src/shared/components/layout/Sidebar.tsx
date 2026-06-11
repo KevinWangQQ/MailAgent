@@ -33,7 +33,8 @@ import {
   Settings,
   Sparkles,
   Star,
-  Sliders
+  Sliders,
+  Target
 } from 'lucide-react'
 
 import { cn } from '@shared/lib/cn'
@@ -207,6 +208,7 @@ const MAILBOX_ICON: Record<EmailView, React.ReactNode> = {
   inbox: <Inbox size={15} strokeWidth={1.75} />,
   outbox: <Send size={15} strokeWidth={1.75} />,
   flagged: <Star size={15} strokeWidth={1.75} />,
+  attention: <Target size={15} strokeWidth={1.75} />,
   all: <Mail size={15} strokeWidth={1.75} />
 }
 
@@ -255,6 +257,7 @@ export function Sidebar(): React.ReactElement {
   const inboxUnread = inboxRow?.unread ?? 0
   const allTotal = mailboxes.reduce((sum, mb) => sum + mb.total, 0)
   const flaggedTotal = mailboxes.reduce((sum, mb) => sum + (mb.flagged ?? 0), 0)
+  const attentionTotal = mailboxes.reduce((sum, mb) => sum + (mb.attention ?? 0), 0)
 
   // MAILBOXES selection: only when we're on the inbox route. Other routes
   // (settings, admin, etc.) leave all MAILBOXES rows unselected. Plus the
@@ -415,6 +418,21 @@ export function Sidebar(): React.ReactElement {
             title={collapsed ? t('nav.outbox') : undefined}
             selected={selectedView === 'outbox'}
             onClick={() => handleViewClick('outbox')}
+          />
+          {/* 「需关注」— 日报 is_attention 判定的实时视图 (置顶 OR 紧急×需动作,
+              排除发件箱/已回复/已完成)。badge = listMailboxes attention 聚合,
+              与列表 SQL 同判定。 */}
+          <NavRow
+            icon={MAILBOX_ICON.attention}
+            label={t('nav.attention')}
+            title={collapsed ? t('nav.attention') : undefined}
+            selected={selectedView === 'attention'}
+            onClick={() => handleViewClick('attention')}
+            right={
+              attentionTotal > 0 ? (
+                <CountRight count={attentionTotal} selected={selectedView === 'attention'} />
+              ) : undefined
+            }
           />
           <NavRow
             icon={MAILBOX_ICON.flagged}
