@@ -64,7 +64,7 @@
 | 开关 | 代码默认 | 说明 |
 |---|---|---|
 | `MAILAGENT_BACKEND` | `applescript` | ★ 生产 = `davmail`（Sprint 16 cutover 后） |
-| `MAILAGENT_OUTBOX_ENABLED` | —（Sprint 15 灰度） | false 时 handler + reverse_sync 退回老 AppleScript 直调 |
+| `MAILAGENT_OUTBOX_ENABLED` | `false`（Sprint 15 灰度） | false 时 handler + reverse_sync 退回老 AppleScript 直调，**但服务层写路径（mail_write.set_flags）仍恒 enqueue → 积压不派发**。打包 App 由前端 `lib/outbox-default.ts` boot/onboarding 自愈写 `true`（显式 false 不覆盖）；关闭+积压时启动告警 + `admin health` 暴露 outbox_backlog |
 | `BODY_DUAL_WRITE_ENABLED` | `true` | v4 双写总开关；失败仅 warning 不阻断 |
 | `NOTION_READ_FROM_SQLITE` | `false` | v4 Phase 4 灰度；切 true 后 sync/resync 走 SQLite SSoT，miss fallback |
 | `LLM_AGENT_ENABLED` | `false` | 本地 LLM 分类总开关（启用前必看 llm-agent.md 防双跑） |
