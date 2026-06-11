@@ -65,6 +65,28 @@ def _coerce_aware(dt: Any) -> Optional[datetime]:
     return None
 
 
+_GETCTAG_ELEMENT_CLS: Any = None
+
+
+def _getctag_element() -> Any:
+    """构造 getctag PROPFIND element (caldav 3.x ``get_properties`` 只收 BaseElement).
+
+    getctag 在 ``http://calendarserver.org/ns/`` namespace, caldav 库没有现成
+    element 类 — 老写法传 ``(ns, name)`` tuple 在 3.x 会抛
+    "'tuple' object has no attribute 'xmlelement'". lazy import 保持 caldav
+    是可选依赖 (跟 _connect 同策略).
+    """
+    global _GETCTAG_ELEMENT_CLS
+    if _GETCTAG_ELEMENT_CLS is None:
+        from caldav.elements.base import BaseElement
+
+        class _GetCTag(BaseElement):
+            tag = "{http://calendarserver.org/ns/}getctag"
+
+        _GETCTAG_ELEMENT_CLS = _GetCTag
+    return _GETCTAG_ELEMENT_CLS()
+
+
 @dataclass
 class CalendarEvent:
     """从 CalDAV 拿到的单个 event.
@@ -128,6 +150,8 @@ class CalDAVReader:
         self.password = get_cipher_key(cfg)
         self._client = None
         self._principal = None
+        # ctag 探测失败 warning 去重 (per-calendar 只 warn 一次, 成功后重置)
+        self._ctag_warned: set[str] = set()
 
     def _connect(self):
         """Lazy connect, 失败抛 ImportError (caldav 未装) 或 RuntimeError (连接/auth 失败)."""
@@ -293,41 +317,32 @@ class CalDAVReader:
         变了才走 sync_collection / 全窗口 re-read. 失败返回 None (worker 降级
         到 polling).
 
-        实现: caldav lib 在 `Calendar` 对象上暴露 `get_ctag()` 方法 (内部走
-        PROPFIND `{urn:ietf:params:xml:ns:caldav}getctag`). 不同 lib 版本签名
-        可能微变, 用 hasattr probe.
+        实现: caldav 3.x ``get_property`` 只接受 BaseElement 实例 (老写法传
+        ``(ns, name)`` tuple 会在库内部抛 "'tuple' object has no attribute
+        'xmlelement'"), 用 ``_getctag_element()`` 自定义 element. 失败 warning
+        per-calendar 去重 (每轮 tick 都调, 防刷屏), 成功后重置.
         """
         principal = self._connect()
         for cal in principal.calendars():
             cal_name = str(cal.name) if cal.name else ""
             if cal_name != calendar_name:
                 continue
-            # caldav lib >=1.3 cal.get_ctag() 直返字符串, 但实测某些 ARM mac /
-            # 老 DavMail 组合下抛 'tuple' object has no attribute 'xmlelement'
-            # (lib 内部 _query() 返回 tuple, get_ctag 假设是单值). 先 try, 失败
-            # fall through 到 PROPFIND.
-            if hasattr(cal, "get_ctag"):
-                try:
-                    return cal.get_ctag()
-                except Exception as e:
-                    logger.debug(
-                        f"[caldav-reader] cal.get_ctag({cal_name!r}) raised "
-                        f"({e}); fallback to PROPFIND"
-                    )
-            # Fallback: PROPFIND on the calendar collection
             try:
-                props = cal.get_properties(
-                    [("DAV:", "getctag"), ("urn:ietf:params:xml:ns:caldav", "getctag")]
-                )
-                for v in props.values():
-                    if v:
-                        return str(v)
-                return None
+                ctag = cal.get_property(_getctag_element())
             except Exception as e:
-                logger.warning(
-                    f"[caldav-reader] PROPFIND getctag({cal_name!r}) failed: {e}"
-                )
+                if cal_name not in self._ctag_warned:
+                    self._ctag_warned.add(cal_name)
+                    logger.warning(
+                        f"[caldav-reader] PROPFIND getctag({cal_name!r}) failed: {e} "
+                        f"— 降级为假定有变化, 同 calendar 后续失败降为 DEBUG"
+                    )
+                else:
+                    logger.debug(
+                        f"[caldav-reader] PROPFIND getctag({cal_name!r}) failed: {e}"
+                    )
                 return None
+            self._ctag_warned.discard(cal_name)
+            return str(ctag) if ctag else None
         logger.warning(f"[caldav-reader] calendar not found: {calendar_name!r}")
         return None
 
