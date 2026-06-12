@@ -43,11 +43,6 @@ export interface ListOpts {
   /** Restrict to a specific set of internal_id values. 配合其他 filter
    *  叠加 (AND), 主要给 pinned-supplement / 已知 id 批量取 enriched 用. */
   internalIds?: number[]
-  /** 「需关注」视图 — 复用日报 is_attention 判定 (src/reports/data.py):
-   *  is_pinned=1 OR (ai_priority ∈ 紧急集 AND ai_action ∈ 需动作集)，
-   *  排除 ①发件箱 ②已回复 (同 thread 有更晚发件箱邮件) ③processing_status='已完成'。
-   *  仅 listEmailsEnriched 实现 (条件依赖 llm_processing JOIN); listEmails 忽略。 */
-  attention?: boolean
   limit?: number
   offset?: number
 }
@@ -662,7 +657,6 @@ interface MailboxRow {
   unread: number
   flagged: number
   failed: number
-  attention: number | null
 }
 
 interface AIFieldsRow extends EmailMetadataRow {
@@ -709,85 +703,17 @@ const ENRICHED_EXTRA_COLS = `
     COALESCE(a.attach_count, 0) AS attach_count
 `
 
-// ── 「需关注」(attention) 视图判定 — 中文常量与 Python 保持一致 ─────────────
-//
-// 复用日报 is_attention() 语义 (src/reports/data.py)。三组常量手抄自 Python:
-//   - URGENT/ACTION: src/notify/island_dispatch.py URGENT_PRIORITY_LABELS /
-//     ACTION_NEEDS_FLAG
-//   - SENT: src/reports/data.py _SENT_MAILBOXES
-// 改那边时同步改这里 (serve-api 镜像 src/api/routers/email_views.py 同此)。
-const ATTENTION_SENT_MAILBOXES = ['发件箱', '已发送邮件', 'Sent', 'Sent Messages', 'Sent Items']
-const ATTENTION_URGENT_PRIORITIES = ['🔴 紧急', '🟡 重要']
-const ATTENTION_NEED_ACTIONS = [
-  '需要回复',
-  '需要决策',
-  '需要Review',
-  '需要会议',
-  '需要跟进',
-  '等待响应'
-]
-
-function placeholders(arr: ReadonlyArray<string>): string {
-  return arr.map(() => '?').join(',')
-}
-
-// 进入条件: is_pinned=1 OR (priority ∈ 紧急集 AND action ∈ 需动作集)。
-// priority/action 与 enriched 列同款 COALESCE (主表 v14 列优先, labels_json
-// fallback 兼容未 backfill 存量) — 保证「列表里看到的 chip」与「进不进视图」一致。
-// 排除: ①发件箱 (COALESCE 容 NULL mailbox, 与 data.py is_outbound 口径一致)
-//       ②已回复 — 同 thread 存在更晚的发件箱邮件 (_mark_replied 的 SQL 化:
-//         date_received 是混合时区 ISO 串, 不能字符串比, julianday 归一真实时刻;
-//         m.thread_id != '' 守卫防空串线程互相误配)
-//       ③processing_status='已完成' (用户已处理, 即使置顶也不再是待办)。
-// 需要 `m`(email_metadata) + `l`(llm_processing) 两个 alias 在作用域内。
-const ATTENTION_WHERE_SQL = `(
-    COALESCE(m.mailbox, '') NOT IN (${placeholders(ATTENTION_SENT_MAILBOXES)})
-    AND (m.processing_status IS NULL OR m.processing_status != '已完成')
-    AND (
-      m.is_pinned = 1
-      OR (
-        COALESCE(m.ai_priority,
-          CASE WHEN json_valid(l.labels_json) THEN json_extract(l.labels_json, '$.priority') END
-        ) IN (${placeholders(ATTENTION_URGENT_PRIORITIES)})
-        AND COALESCE(m.ai_action,
-          CASE WHEN json_valid(l.labels_json) THEN json_extract(l.labels_json, '$.action_type') END
-        ) IN (${placeholders(ATTENTION_NEED_ACTIONS)})
-      )
-    )
-    AND NOT EXISTS (
-      SELECT 1 FROM email_metadata s
-       WHERE m.thread_id IS NOT NULL AND m.thread_id != ''
-         AND s.thread_id = m.thread_id
-         AND s.mailbox IN (${placeholders(ATTENTION_SENT_MAILBOXES)})
-         AND julianday(s.date_received) >= julianday(m.date_received)
-    )
-  )`
-
-const ATTENTION_WHERE_PARAMS = [
-  ...ATTENTION_SENT_MAILBOXES,
-  ...ATTENTION_URGENT_PRIORITIES,
-  ...ATTENTION_NEED_ACTIONS,
-  ...ATTENTION_SENT_MAILBOXES
-]
-
 function buildEnrichedWhere(opts: ListOpts): WhereBuild {
   const { sql, params } = buildListWhere(opts)
+  if (sql.length === 0) return { sql, params }
   // Re-qualify every bare column reference to the `m.` alias so the JOIN
   // doesn't trip on ambiguous columns. Cheap regex — no SQL injection
   // surface because every clause comes from buildListWhere().
-  const qualified =
-    sql.length === 0
-      ? ''
-      : sql.replace(
-          /\b(mailbox|sync_status|date_received|sender|subject|is_read|is_flagged|notion_page_id|internal_id)\b/g,
-          'm.$1'
-        )
-  if (!opts.attention) return { sql: qualified, params }
-  const sqlWithAttention =
-    qualified.length === 0
-      ? `WHERE ${ATTENTION_WHERE_SQL}`
-      : `${qualified} AND ${ATTENTION_WHERE_SQL}`
-  return { sql: sqlWithAttention, params: [...params, ...ATTENTION_WHERE_PARAMS] }
+  const qualified = sql.replace(
+    /\b(mailbox|sync_status|date_received|sender|subject|is_read|is_flagged|notion_page_id|internal_id)\b/g,
+    'm.$1'
+  )
+  return { sql: qualified, params }
 }
 
 function shapeEnrichedItem(row: EnrichedRow): EnrichedEmailMeta {
@@ -886,25 +812,17 @@ export function listMailboxes(): MailboxSummary[] {
     // so the Sidebar virtual entries ("已标旗" / "Failed") can show live
     // numbers instead of hardcoded zero. Excludes `skipped` from total so
     // headcounts match what the EmailList actually displays.
-    //
-    // attention — 「需关注」虚拟条目计数, 条件与 listEmailsEnriched({attention})
-    // 完全同一 SQL 片段 (ATTENTION_WHERE_SQL), 保证 badge 数 = 列表行数。
-    // 为此 email_metadata 取 alias m + LEFT JOIN llm_processing (1:1 on
-    // internal_id, 不影响 GROUP BY 基数)。发件箱组的 attention 恒 0 (条件内
-    // 自带 mailbox NOT IN 发件箱)。
-    `SELECT m.mailbox AS mailbox,
+    `SELECT mailbox,
             COUNT(*) AS total,
-            SUM(CASE WHEN m.is_read = 0 THEN 1 ELSE 0 END) AS unread,
-            SUM(CASE WHEN m.is_flagged = 1 THEN 1 ELSE 0 END) AS flagged,
-            SUM(CASE WHEN m.sync_status IN ('failed', 'dead_letter') THEN 1 ELSE 0 END) AS failed,
-            SUM(CASE WHEN ${ATTENTION_WHERE_SQL} THEN 1 ELSE 0 END) AS attention
-       FROM email_metadata m
-       LEFT JOIN llm_processing l ON l.internal_id = m.internal_id
-      WHERE m.mailbox IS NOT NULL AND m.mailbox != ''
-        AND m.sync_status != 'skipped'
-      GROUP BY m.mailbox
+            SUM(CASE WHEN is_read = 0 THEN 1 ELSE 0 END) AS unread,
+            SUM(CASE WHEN is_flagged = 1 THEN 1 ELSE 0 END) AS flagged,
+            SUM(CASE WHEN sync_status IN ('failed', 'dead_letter') THEN 1 ELSE 0 END) AS failed
+       FROM email_metadata
+      WHERE mailbox IS NOT NULL AND mailbox != ''
+        AND sync_status != 'skipped'
+      GROUP BY mailbox
       ORDER BY total DESC`
-  ).all(...ATTENTION_WHERE_PARAMS) as MailboxRow[]
+  ).all() as MailboxRow[]
   return rows
     .filter(
       (r): r is MailboxRow & { mailbox: string } => r.mailbox !== null && r.mailbox.length > 0
@@ -914,8 +832,7 @@ export function listMailboxes(): MailboxSummary[] {
       total: r.total ?? 0,
       unread: r.unread ?? 0,
       flagged: r.flagged ?? 0,
-      failed: r.failed ?? 0,
-      attention: r.attention ?? 0
+      failed: r.failed ?? 0
     }))
 }
 

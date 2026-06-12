@@ -549,9 +549,6 @@ function listOptsForView(view: EmailView, limit: number, customMailbox: string |
   if (view === 'inbox') return { mailbox: '收件箱', limit }
   if (view === 'outbox') return { mailbox: '发件箱', limit }
   if (view === 'flagged') return { isFlagged: true, limit }
-  // 「需关注」— SQL 侧整组判定 (置顶 OR 紧急×需动作, 排除发件箱/已回复/已完成),
-  // 见 handlers/email.ts ATTENTION_WHERE_SQL。
-  if (view === 'attention') return { attention: true, limit }
   return { limit }
 }
 
@@ -822,11 +819,8 @@ export function EmailList(): React.ReactElement {
   // 发件箱例外: pinnedSupp 是跨邮箱置顶 (主要是收件箱置顶), 不该拉进发件箱视图。
   // 发件箱只锚在我发出的邮件上, 置顶的发件邮件本就在 all 里 (会被 partitionByDate
   // 路由到 pinned 桶), 故 outbox 直接用 filteredBase, 不 union 收件箱置顶。
-  // 需关注视图例外: attention SQL 自含置顶 (且按已回复/已完成排除), union 会把
-  // 被排除的置顶邮件 (如已完成的) 重新塞回来, 破坏视图判定 — 直接用 filteredBase。
   const filtered = useMemo(() => {
-    if (view === 'outbox' || view === 'attention' || pinnedSuppScoped.length === 0)
-      return filteredBase
+    if (view === 'outbox' || pinnedSuppScoped.length === 0) return filteredBase
     const ids = new Set(filteredBase.map((e) => e.internal_id))
     const out = filteredBase.slice()
     for (const p of pinnedSuppScoped) {
@@ -1014,12 +1008,8 @@ export function EmailList(): React.ReactElement {
           // 兜底成 bare (has_body=false / ai_priority=null), 一旦它是线程最新邮件就
           // 被 groupByThread 选成 head → "非置顶标旗邮件矮行 + 无 AI strip"。标旗
           // 视图语义=只看我标的邮件, 故线程只在标旗邮件之间聚合 (head 必为标旗邮件,
-          // enriched 完整), 不 merge 跨邮件补充。需关注视图同理: 命中判定的邮件
-          // 离散于各线程, 线程补充会让非命中邮件抢占 head。
-          groupByThread(
-            filtered,
-            view === 'flagged' || view === 'attention' ? EMPTY_THREAD_SUPPLEMENT : threadSupplement
-          ),
+          // enriched 完整), 不 merge 跨邮件补充。
+          groupByThread(filtered, view === 'flagged' ? EMPTY_THREAD_SUPPLEMENT : threadSupplement),
     [view, filtered, threadSupplement]
   )
 
@@ -1288,9 +1278,7 @@ export function EmailList(): React.ReactElement {
                 ? t('nav.outbox')
                 : view === 'flagged'
                   ? t('nav.flagged')
-                  : view === 'attention'
-                    ? t('nav.attention')
-                    : t('nav.allMail')}
+                  : t('nav.allMail')}
             </div>
           )}
           <div className="flex items-center gap-1">

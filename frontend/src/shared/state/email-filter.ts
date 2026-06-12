@@ -20,9 +20,7 @@ const KEY_PRI = 'mailagent.emailList.priorities'
 const KEY_CAT = 'mailagent.emailList.categories.v2'
 
 export type EmailFilter = 'all' | 'unread' | 'flagged' | 'failed'
-// 'attention' = 「需关注」虚拟视图 — 日报 is_attention 判定的实时版 (置顶 OR
-// 紧急×需动作, 排除发件箱/已回复/已完成), SQL 过滤在 listEnriched({attention})。
-export type EmailView = 'inbox' | 'outbox' | 'flagged' | 'attention' | 'all'
+export type EmailView = 'inbox' | 'outbox' | 'flagged' | 'all'
 export type InboxTab = 'focused' | 'other'
 
 /** Email category — the verbatim LLM CATEGORY_ENUM string (see

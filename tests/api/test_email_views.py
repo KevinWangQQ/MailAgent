@@ -117,67 +117,12 @@ def test_list_mailboxes(client):
     data = body["data"]
     assert isinstance(data, list)
     inbox = next(m for m in data if m["mailbox"] == "收件箱")
-    assert set(inbox) == {"mailbox", "total", "unread", "flagged", "failed", "attention"}
+    assert set(inbox) == {"mailbox", "total", "unread", "flagged", "failed"}
     # 2 emails in 收件箱; EMAIL_NO_BODY is read, EMAIL_ID unread+flagged.
     assert inbox["total"] == 2
     assert inbox["unread"] == 1
     assert inbox["flagged"] == 1
-    # Degraded schema (无 ai_priority/ai_action) → 只剩置顶路径; 基础语料无置顶。
-    assert inbox["attention"] == 0
     assert body["meta"]["count"] == len(data)
-
-
-# ---------------------------------------------------------------------------
-# 「需关注」(attention) — list-enriched?attention=true + mailboxes attention 计数
-#
-# 共享 temp-DB 是降级 schema (无 ai_priority/ai_action/processing_status/
-# llm_processing) → 紧急×需动作路径恒假, 只能走置顶路径; 完整判定 (优先级/动作/
-# 已完成排除/labels fallback) 的单测在 Electron 侧
-# frontend/tests/main/handlers/email.test.ts (全量 fixture schema)。
-# ---------------------------------------------------------------------------
-
-
-def test_attention_pinned_replied_and_sent(client, temp_db):
-    import sqlite3
-
-    conn = sqlite3.connect(str(temp_db))
-    try:
-        # 9001: 置顶收件 → 进; 9002: 置顶但同 thread 有更晚发件箱邮件 (9003) → 已回复排除;
-        # 9003: 发件箱本体 → 排除。
-        conn.executescript(
-            """
-            INSERT INTO email_metadata
-              (internal_id, message_id, thread_id, subject, sender, date_received,
-               mailbox, sync_status, is_pinned)
-            VALUES
-              (9001, '<att-9001>', 'thread-att-1', 'pinned todo', 'p@example.com',
-               '2026-06-01 10:00:00', '收件箱', 'synced', 1),
-              (9002, '<att-9002>', 'thread-att-2', 'pinned but replied', 'q@example.com',
-               '2026-06-01 11:00:00', '收件箱', 'synced', 1),
-              (9003, '<att-9003>', 'thread-att-2', 'my reply', 'me@example.com',
-               '2026-06-02 09:00:00', '发件箱', 'synced', 0);
-            """
-        )
-        conn.commit()
-
-        r = client.get("/api/email/list-enriched", params={"attention": "true"})
-        assert r.status_code == 200
-        ids = {row["internal_id"] for row in r.json()["data"]}
-        assert 9001 in ids
-        assert 9002 not in ids  # 已回复 (同 thread 更晚发件箱邮件), 置顶也排除
-        assert 9003 not in ids  # 发件箱
-        assert EMAIL_ID not in ids  # 未置顶 + 降级 schema 无优先级路径
-
-        # mailboxes attention 计数与列表同判定。
-        r2 = client.get("/api/email/mailboxes")
-        inbox = next(m for m in r2.json()["data"] if m["mailbox"] == "收件箱")
-        assert inbox["attention"] == 1
-        sent = next(m for m in r2.json()["data"] if m["mailbox"] == "发件箱")
-        assert sent["attention"] == 0
-    finally:
-        conn.execute("DELETE FROM email_metadata WHERE internal_id >= 9001")
-        conn.commit()
-        conn.close()
 
 
 # ---------------------------------------------------------------------------
