@@ -201,6 +201,7 @@ def admin_health(
     tables_present: list[str] = []
     error_message: Optional[str] = None
     outbox_backlog = 0
+    backend_degraded = False
 
     try:
         if not Path(db_path).exists():
@@ -217,6 +218,12 @@ def admin_health(
                     db_version = int(row[0])
                 except (TypeError, ValueError):
                     db_version = None
+            # backend 降级待恢复标志 (serve 在 davmail probe 耗尽后写 'true',
+            # 期间同步暂停、每 5min 自动重试 probe — src/mail/backend/factory.py)
+            row = cursor.execute(
+                "SELECT value FROM sync_state WHERE key='backend_degraded'"
+            ).fetchone()
+            backend_degraded = bool(row and row[0] == "true")
             cursor = conn.execute(
                 "SELECT name FROM sqlite_master WHERE type IN ('table', 'view')"
             )
@@ -261,6 +268,7 @@ def admin_health(
         "tables_missing": missing,
         "outbox_dispatch_enabled": outbox_enabled,
         "outbox_backlog": outbox_backlog,
+        "backend_degraded": backend_degraded,
         "healthy": healthy,
     }
     if outbox_warning:
@@ -277,6 +285,7 @@ def admin_health(
             print(f"tables_missing {missing}")
         print(f"outbox_dispatch_enabled {outbox_enabled}")
         print(f"outbox_backlog {outbox_backlog}")
+        print(f"backend_degraded {backend_degraded}")
         if outbox_warning:
             print(f"outbox_warning {outbox_warning}")
         if error_message:

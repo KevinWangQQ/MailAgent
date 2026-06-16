@@ -436,3 +436,161 @@ async def test_oauth_alert_dedupes_repeat_same_error(
     await wd._tick()  # 同样的 error 不应重复发
     oauth_calls = [c for c in alerter.calls if c[0] == "alert_davmail_oauth_failure"]
     assert len(oauth_calls) == 1
+
+
+# ────────────────────────────────────────────────────────────────
+# IMAP LOGIN 探测 + token 劣化自动重启 (2026-06-12 事故回归)
+# ────────────────────────────────────────────────────────────────
+
+
+def _make_login_wd(
+    sync_store: SyncStore,
+    davmail_root: Path,
+    alerter=None,
+    *,
+    login_ok: bool = False,
+    restart_ok: bool = True,
+):
+    """构造带 cfg 的 watchdog, login 探测与 pm2 restart 都打桩."""
+    wd = DavMailWatchdog(
+        sync_store=sync_store,
+        alerter=alerter,  # type: ignore[arg-type]
+        davmail_root=davmail_root,
+        cfg=object(),  # type: ignore[arg-type] — 仅需非 None 启用 login 探测
+    )
+    wd._probe_imap_login = lambda: login_ok  # type: ignore[method-assign]
+    restart_calls = []
+
+    async def fake_restart():
+        restart_calls.append(time.time())
+        return restart_ok, "exit 0" if restart_ok else "exit 1: boom"
+
+    wd._restart_davmail = fake_restart  # type: ignore[method-assign]
+    return wd, restart_calls
+
+
+async def test_consecutive_login_failures_trigger_pm2_restart(
+    sync_store: SyncStore, davmail_root: Path
+):
+    """TCP 可达但 LOGIN 连续 3 次失败 → 自动 pm2 restart + 告警 + 落盘时间戳."""
+    alerter = _FakeAlerter()
+    wd, restart_calls = _make_login_wd(sync_store, davmail_root, alerter)
+    await _patch_probe(wd, imap_ok=True, smtp_ok=True)
+
+    await wd._tick()
+    await wd._tick()
+    assert restart_calls == [], "未达阈值 (2 次) 不应重启"
+    await wd._tick()
+    assert len(restart_calls) == 1, "第 3 次连续失败应触发重启"
+
+    assert sync_store.get_state("davmail.last_auto_restart_at"), "重启时间戳应落盘"
+    restart_alerts = [c for c in alerter.calls if c[0] == "send_alert"]
+    assert len(restart_alerts) == 1
+    assert restart_alerts[0][2].get("alert_key") == "davmail_auto_restart"
+    # 重启成功后计数清零, 等下一轮探测重新累计
+    assert wd._consecutive_login_fails == 0
+
+
+async def test_auto_restart_cooldown_prevents_flapping(
+    sync_store: SyncStore, davmail_root: Path
+):
+    """重启后冷却期内即使继续 LOGIN 失败也不再触发第二次重启."""
+    wd, restart_calls = _make_login_wd(sync_store, davmail_root)
+    await _patch_probe(wd, imap_ok=True, smtp_ok=True)
+
+    for _ in range(3):
+        await wd._tick()
+    assert len(restart_calls) == 1
+
+    # 继续连续失败 (冷却 600s 内, 即使再次达到阈值)
+    for _ in range(5):
+        await wd._tick()
+    assert len(restart_calls) == 1, "冷却期内不应重复重启"
+
+    # 把上次重启时间拨回冷却期之外 → 再次达阈值应再触发
+    wd._last_auto_restart_ts = time.time() - 700
+    await wd._tick()  # 此时 _consecutive_login_fails 已 ≥3
+    assert len(restart_calls) == 2, "冷却期过后持续失败应再次重启"
+
+
+async def test_login_success_resets_failure_counter(
+    sync_store: SyncStore, davmail_root: Path
+):
+    wd, restart_calls = _make_login_wd(sync_store, davmail_root, login_ok=False)
+    await _patch_probe(wd, imap_ok=True, smtp_ok=True)
+    await wd._tick()
+    await wd._tick()
+    assert wd._consecutive_login_fails == 2
+
+    wd._probe_imap_login = lambda: True  # type: ignore[method-assign]
+    await wd._tick()
+    assert wd._consecutive_login_fails == 0
+    assert restart_calls == []
+    assert sync_store.get_state("davmail.imap_login_ok") == "1"
+
+
+async def test_login_probe_skipped_when_tcp_down(
+    sync_store: SyncStore, davmail_root: Path
+):
+    """进程不可达时跳过 login 探测 (进程死亡走独立告警路径, 不误判 token 劣化)."""
+    wd, restart_calls = _make_login_wd(sync_store, davmail_root)
+
+    def boom():
+        raise AssertionError("TCP down 时不应跑 login 探测")
+
+    wd._probe_imap_login = boom  # type: ignore[method-assign]
+    await _patch_probe(wd, imap_ok=False, smtp_ok=True)
+    await wd._tick()
+    assert restart_calls == []
+    assert sync_store.get_state("davmail.imap_login_ok") == ""
+
+
+async def test_login_probe_skipped_without_cfg(
+    sync_store: SyncStore, davmail_root: Path
+):
+    """未注入 cfg (老调用方) → 不跑 login 探测, 行为与改动前一致."""
+    wd = DavMailWatchdog(
+        sync_store=sync_store, alerter=None, davmail_root=davmail_root
+    )
+
+    def boom():
+        raise AssertionError("cfg=None 时不应跑 login 探测")
+
+    wd._probe_imap_login = boom  # type: ignore[method-assign]
+    await _patch_probe(wd, imap_ok=True, smtp_ok=True)
+    await wd._tick()
+    assert sync_store.get_state("davmail.imap_login_ok") == ""
+
+
+async def test_failed_restart_keeps_counter_and_alerts_critical(
+    sync_store: SyncStore, davmail_root: Path
+):
+    """pm2 restart 失败: 计数不清零 (恢复后真实探测说话), 告警升 critical."""
+    alerter = _FakeAlerter()
+    wd, restart_calls = _make_login_wd(
+        sync_store, davmail_root, alerter, restart_ok=False
+    )
+    await _patch_probe(wd, imap_ok=True, smtp_ok=True)
+    for _ in range(3):
+        await wd._tick()
+    assert len(restart_calls) == 1
+    assert wd._consecutive_login_fails == 3
+    restart_alerts = [c for c in alerter.calls if c[0] == "send_alert"]
+    assert restart_alerts[0][2].get("level") == "critical"
+
+
+def test_login_degraded_drives_level_critical(
+    sync_store: SyncStore, davmail_root: Path
+):
+    wd = DavMailWatchdog(
+        sync_store=sync_store, alerter=None, davmail_root=davmail_root
+    )
+    level = wd._compute_overall_level(
+        imap_ok=True,
+        smtp_ok=True,
+        token_age_days=5.0,
+        oauth_error_active=False,
+        throttle_burst=False,
+        login_degraded=True,
+    )
+    assert level == "critical"

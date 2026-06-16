@@ -152,6 +152,95 @@ def test_create_backend_applescript_probe_failure_no_retry(monkeypatch):
     assert probe_calls["n"] == 1
 
 
+class _RecordingSyncStore(_MockSyncStore):
+    """记录 set_state 写入的 sync_store 替身 (降级循环测试用)."""
+
+    def __init__(self):
+        self.state: dict[str, str] = {}
+        self.writes: list[tuple[str, str]] = []
+
+    def set_state(self, key, value):
+        self.state[key] = value
+        self.writes.append((key, value))
+
+
+def test_wait_for_backend_recovery_retries_until_probe_ok(monkeypatch):
+    """2026-06-12 事故回归: probe 耗尽后不退出, 降级循环重试直到恢复.
+
+    断言: backend_degraded 进 'true' / 恢复后 'false', on_degraded /
+    on_recovered 各回调一次, 返回可用 backend.
+    """
+    import src.mail.backend.factory as factory_mod
+    from src.mail.backend.davmail_backend import DavMailBackend
+    from src.mail.backend.factory import wait_for_backend_recovery
+
+    cfg = _MockConfig()
+    cfg.mailagent_backend = "davmail"
+    store = _RecordingSyncStore()
+
+    probe_calls = {"n": 0}
+
+    def fake_probe(self):
+        probe_calls["n"] += 1
+        if probe_calls["n"] <= 2:
+            return False, "IMAP LOGIN failed"
+        return True, "DavMail OK"
+
+    monkeypatch.setattr(DavMailBackend, "probe_readiness", fake_probe)
+    sleeps = []
+    monkeypatch.setattr(factory_mod.time, "sleep", lambda s: sleeps.append(s))
+
+    degraded_calls, recovered_calls = [], []
+    first_err = BackendStartupError(
+        backend="davmail", reason="probe exhausted", fallback_hint=None
+    )
+    backend = wait_for_backend_recovery(
+        cfg,
+        store,
+        first_err,
+        retry_interval_s=300.0,
+        on_degraded=degraded_calls.append,
+        on_recovered=recovered_calls.append,
+    )
+
+    assert isinstance(backend, DavMailBackend)
+    assert probe_calls["n"] == 3  # 2 次失败 + 1 次成功
+    assert sleeps == [300.0] * 3  # 每次重试前都等满间隔
+    assert degraded_calls == [first_err]
+    assert recovered_calls == [3]
+    # 状态机: 进入降级写 true, 恢复后写 false
+    degraded_writes = [v for k, v in store.writes if k == "backend_degraded"]
+    assert degraded_writes == ["true", "false"]
+    assert store.state["backend_degraded"] == "false"
+    assert store.state["backend_degraded_since"] == ""
+
+
+def test_wait_for_backend_recovery_callback_failure_does_not_break_loop(monkeypatch):
+    """on_degraded (飞书告警) 抛异常不能阻断恢复循环."""
+    import src.mail.backend.factory as factory_mod
+    from src.mail.backend.davmail_backend import DavMailBackend
+    from src.mail.backend.factory import wait_for_backend_recovery
+
+    cfg = _MockConfig()
+    cfg.mailagent_backend = "davmail"
+    store = _RecordingSyncStore()
+
+    monkeypatch.setattr(
+        DavMailBackend, "probe_readiness", lambda self: (True, "OK")
+    )
+    monkeypatch.setattr(factory_mod.time, "sleep", lambda s: None)
+
+    def boom(err):
+        raise RuntimeError("feishu down")
+
+    backend = wait_for_backend_recovery(
+        cfg, store, BackendStartupError(backend="davmail", reason="x"),
+        on_degraded=boom,
+    )
+    assert isinstance(backend, DavMailBackend)
+    assert store.state["backend_degraded"] == "false"
+
+
 def test_backend_startup_error_fields():
     e = BackendStartupError(
         backend="davmail", reason="IMAP timeout", fallback_hint="切回 applescript",

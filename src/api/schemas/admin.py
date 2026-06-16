@@ -27,6 +27,7 @@ class AdminHealthData(BaseModel):
     schema_ok: bool
     tables_present: list[str]
     tables_missing: list[str]
+    backend_degraded: bool = False
     healthy: bool
     error: Optional[str] = None
 

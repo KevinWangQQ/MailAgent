@@ -35,6 +35,44 @@ from src.utils.logger import setup_logger
 # 时假设 __file__ 在仓库根, 迁入 src/ 后必须显式还原, 否则路径会错指到 src/ 下。
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
+
+def _send_alert_oneshot(*, level: str, title: str, message: str, alert_key: str) -> None:
+    """启动期一次性飞书告警 (主流程 alerter 尚未初始化时用).
+
+    在独立线程里 asyncio.run: `__init__` 可能已身处 run_service 的事件循环内
+    (async def run_service → EmailNotionSyncApp()), 直接 asyncio.run 会
+    RuntimeError("cannot be called from a running event loop") 把告警静默吞掉。
+    """
+    if not (config.alert_feishu_webhook_url and config.alert_enabled):
+        return
+    import threading
+
+    def _run() -> None:
+        try:
+            from src.notify.alert import FeishuAlertNotifier
+
+            alerter = FeishuAlertNotifier(
+                webhook_url=config.alert_feishu_webhook_url,
+                webhook_secret=config.alert_feishu_webhook_secret,
+                enabled=config.alert_enabled,
+                levels=[lv.strip() for lv in config.alert_levels.split(',')],
+                cooldown=config.alert_cooldown,
+            )
+
+            async def _send() -> None:
+                await alerter.send_alert(
+                    level=level, title=title, message=message, alert_key=alert_key
+                )
+                await alerter.close()
+
+            asyncio.run(_send())
+        except Exception as e:  # noqa: BLE001 — 告警失败不阻断启动/恢复
+            logger.warning(f"[startup-alert] send failed: {e}")
+
+    t = threading.Thread(target=_run, name="startup-alert", daemon=True)
+    t.start()
+    t.join(timeout=15)
+
 class EmailNotionSyncApp:
     """邮件同步应用主类"""
 
@@ -60,33 +98,58 @@ class EmailNotionSyncApp:
                 sync_store=sync_store_early,
                 probe_max_attempts=DAVMAIL_PROBE_MAX_ATTEMPTS,
             )
+            # 清掉上次降级残留 (进程在降级循环中被 kill 时 'true' 会留在 sync_state)
+            try:
+                sync_store_early.set_state("backend_degraded", "false")
+                sync_store_early.set_state("backend_degraded_since", "")
+            except Exception:
+                pass
         except BackendStartupError as e:
-            print(f"\n❌ {e}", file=sys.stderr)
-            if e.fallback_hint:
-                print(f"   → {e.fallback_hint}\n", file=sys.stderr)
-            # Sprint 16: probe 失败立即发飞书告警 (alerter 还没主流程初始化, 临时一次性发)
-            # 注意: asyncio 顶部已 import, 这里不要 re-import, 否则触发 UnboundLocalError
-            # ("cannot access local variable 'asyncio'") 把整个 __init__ 当 local scope
-            if config.alert_feishu_webhook_url and config.alert_enabled:
-                try:
-                    from src.notify.alert import FeishuAlertNotifier
-                    _tmp_alerter = FeishuAlertNotifier(
-                        webhook_url=config.alert_feishu_webhook_url,
-                        webhook_secret=config.alert_feishu_webhook_secret,
-                        enabled=config.alert_enabled,
-                        levels=[lv.strip() for lv in config.alert_levels.split(',')],
-                        cooldown=config.alert_cooldown,
-                    )
-                    asyncio.run(_tmp_alerter.send_alert(
+            if config.mailagent_backend == "davmail":
+                # 2026-06-12 事故: davmail token 劣化 → probe 耗尽 → serve 退出 →
+                # 同步中断一整天无人察觉。davmail 路径不再退出, 进降级待恢复循环
+                # (每 5min 重试 probe, sync_state['backend_degraded'] 供 admin
+                # health 直读), 恢复后自动继续启动。
+                from src.mail.backend.factory import (
+                    BACKEND_DEGRADED_RETRY_INTERVAL_S,
+                    wait_for_backend_recovery,
+                )
+                retry_min = int(BACKEND_DEGRADED_RETRY_INTERVAL_S // 60)
+                self.backend = wait_for_backend_recovery(
+                    config,
+                    sync_store_early,
+                    e,
+                    on_degraded=lambda err: _send_alert_oneshot(
                         level="critical",
-                        title=f"MailAgent 启动失败: {config.mailagent_backend} backend probe 不过",
-                        message=f"{e}\n\n切换提示: {e.fallback_hint or '无'}\n\n服务已退出, 不会自动重启 (autorestart=false).",
-                        alert_key=f"backend_startup_fail:{config.mailagent_backend}",
-                    ))
-                    asyncio.run(_tmp_alerter.close())
-                except Exception as alert_err:
-                    print(f"⚠️ 同时尝试发飞书告警也失败: {alert_err}", file=sys.stderr)
-            sys.exit(1)
+                        title="MailAgent 降级: davmail backend probe 不过, 同步暂停待恢复",
+                        message=(
+                            f"{err}\n\n进程未退出, 每 {retry_min} 分钟自动重试 probe, "
+                            f"恢复后自动继续同步。可手动 `pm2 restart davmail-poc` 加速恢复。"
+                        ),
+                        alert_key="backend_degraded:davmail",
+                    ),
+                    on_recovered=lambda attempts: _send_alert_oneshot(
+                        level="warning",
+                        title="MailAgent 恢复: davmail backend probe 通过, 同步继续",
+                        message=f"降级期间共重试 {attempts} 次 probe, 已自动恢复, 无需人工处理。",
+                        alert_key="backend_degraded_recovered:davmail",
+                    ),
+                )
+            else:
+                # applescript 路径维持快速失败 (probe 失败 = Mail.app/FDA 问题, 等待无意义)
+                print(f"\n❌ {e}", file=sys.stderr)
+                if e.fallback_hint:
+                    print(f"   → {e.fallback_hint}\n", file=sys.stderr)
+                _send_alert_oneshot(
+                    level="critical",
+                    title=f"MailAgent 启动失败: {config.mailagent_backend} backend probe 不过",
+                    message=(
+                        f"{e}\n\n切换提示: {e.fallback_hint or '无'}\n\n"
+                        f"服务已退出, 不会自动重启 (autorestart=false)."
+                    ),
+                    alert_key=f"backend_startup_fail:{config.mailagent_backend}",
+                )
+                sys.exit(1)
 
         # Sprint 16: davmail 模式自动禁用 keep_alive (IMAP/SMTP 不需要 UI session).
         if self.backend.backend_origin == "davmail" and config.keep_alive_enabled:
@@ -313,6 +376,7 @@ class EmailNotionSyncApp:
                 imap_host=config.davmail_imap_host,
                 imap_port=config.davmail_imap_port,
                 smtp_port=config.davmail_smtp_port,
+                cfg=config,  # IMAP LOGIN 健康探测 (token 劣化自愈) 需要
             )
             if self.stats_reporter:
                 self.stats_reporter.add_collector(

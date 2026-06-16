@@ -14,7 +14,8 @@ IMAP SEARCH HEADER. AppleScriptBackend 用不到, 接受同样签名是为了 fa
 from __future__ import annotations
 
 import time
-from typing import TYPE_CHECKING, Optional
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING, Callable, Optional
 
 from loguru import logger
 
@@ -28,6 +29,11 @@ if TYPE_CHECKING:
 # ~30-60s), 首次 TCP probe Connection refused 不能直接判死. 5s × 24 ≈ 2 分钟窗口.
 DAVMAIL_PROBE_RETRY_INTERVAL_S = 5.0
 DAVMAIL_PROBE_MAX_ATTEMPTS = 24
+
+# 降级待恢复循环 (2026-06-12 事故: davmail token 劣化 IMAP LOGIN 持续失败, 24 次
+# 重试耗尽后 serve 进程直接退出, 同步中断一整天无人察觉): probe 耗尽后不退出,
+# 每 5 分钟重试一次, 期间 sync_state['backend_degraded']='true' 供 admin health 直读.
+BACKEND_DEGRADED_RETRY_INTERVAL_S = 300.0
 
 
 def create_backend(
@@ -114,3 +120,64 @@ def create_backend(
 
     logger.info(f"[backend-factory] backend={backend_name!r} probe ok: {detail}")
     return backend
+
+
+def wait_for_backend_recovery(
+    cfg: "Config",
+    sync_store: "SyncStore",
+    first_error: BackendStartupError,
+    *,
+    retry_interval_s: float = BACKEND_DEGRADED_RETRY_INTERVAL_S,
+    on_degraded: Optional[Callable[[BackendStartupError], None]] = None,
+    on_recovered: Optional[Callable[[int], None]] = None,
+) -> IMailBackend:
+    """davmail probe 耗尽后的降级待恢复循环 — 阻塞重试直到 probe 通过.
+
+    serve 长驻服务专用 (CLI 仍快速失败): create_backend 重试耗尽不再让进程退出,
+    改为每 retry_interval_s 重试一次 probe, 期间写 sync_state:
+      backend_degraded        'true' / 'false'  (admin health / serve-api 直读)
+      backend_degraded_since  进入降级的 UTC ISO 时间, 恢复后清空
+    恢复后返回已 probe 通过的 backend, 调用方继续正常启动序列.
+
+    Args:
+        on_degraded: 进入降级时回调一次 (发飞书告警用), 异常被吞不阻断循环.
+        on_recovered: 恢复时回调 (参数 = 重试次数), 异常同样被吞.
+    """
+    logger.warning(
+        f"[backend-degraded] davmail probe 耗尽 ({first_error.reason}) — "
+        f"进入降级待恢复循环 (每 {retry_interval_s:.0f}s 重试 probe), 进程不退出"
+    )
+    sync_store.set_state("backend_degraded", "true")
+    sync_store.set_state(
+        "backend_degraded_since", datetime.now(timezone.utc).isoformat()
+    )
+    if on_degraded is not None:
+        try:
+            on_degraded(first_error)
+        except Exception as e:  # noqa: BLE001 — 告警失败不阻断恢复循环
+            logger.warning(f"[backend-degraded] on_degraded callback failed: {e}")
+
+    attempt = 0
+    while True:
+        time.sleep(retry_interval_s)
+        attempt += 1
+        try:
+            backend = create_backend(cfg, sync_store=sync_store, probe_max_attempts=1)
+        except BackendStartupError as e:
+            logger.warning(
+                f"[backend-degraded] 重试 #{attempt} probe 仍失败: {e.reason}; "
+                f"{retry_interval_s:.0f}s 后再试"
+            )
+            continue
+
+        sync_store.set_state("backend_degraded", "false")
+        sync_store.set_state("backend_degraded_since", "")
+        logger.warning(
+            f"[backend-degraded] davmail 恢复 (重试 #{attempt} probe 通过), 继续启动"
+        )
+        if on_recovered is not None:
+            try:
+                on_recovered(attempt)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[backend-degraded] on_recovered callback failed: {e}")
+        return backend

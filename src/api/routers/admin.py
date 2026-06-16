@@ -94,6 +94,7 @@ async def admin_health(
     db_version: Optional[int] = None
     tables_present: list[str] = []
     error_message: Optional[str] = None
+    backend_degraded = False
     expected = _expected_db_version()
 
     try:
@@ -111,6 +112,12 @@ async def admin_health(
                     db_version = int(row[0])
                 except (TypeError, ValueError):
                     db_version = None
+            # backend 降级待恢复标志 (serve 在 davmail probe 耗尽后写 'true',
+            # 期间同步暂停、每 5min 自动重试 probe — src/mail/backend/factory.py)
+            row = conn.execute(
+                "SELECT value FROM sync_state WHERE key='backend_degraded'"
+            ).fetchone()
+            backend_degraded = bool(row and row[0] == "true")
             tables_present = [
                 r[0]
                 for r in conn.execute(
@@ -136,6 +143,7 @@ async def admin_health(
         "schema_ok": schema_ok,
         "tables_present": tables_present,
         "tables_missing": missing,
+        "backend_degraded": backend_degraded,
         "healthy": healthy,
     }
     if error_message:
@@ -425,11 +433,15 @@ def _compute_level(
     token_age_days: Optional[float],
     oauth_error_active: bool,
     throttle_burst: bool,
+    login_degraded: bool = False,
 ) -> str:
     """重算 overall level (镜像 davmail_watchdog._compute_overall_level)。"""
     if oauth_error_active:
         return "critical"
     if not imap_ok or not smtp_ok:
+        return "critical"
+    if login_degraded:
+        # TCP 可达但 IMAP LOGIN 连续失败 = token 劣化 (能发不能收)
         return "critical"
     if token_age_days is not None and token_age_days >= _TOKEN_CRITICAL_DAYS:
         return "critical"
@@ -472,6 +484,9 @@ def _build_davmail_health(state: dict[str, str]) -> dict:
     last_oauth_error_at = state.get("davmail.last_oauth_error_at") or None
     throttle_5min = _as_int("davmail.throttle_events_5min")
     uid_backfill_paused = state.get("davmail_uid_backfill_paused") == "true"
+    consecutive_login_failures = _as_int("davmail.consecutive_login_failures")
+    # 镜像 watchdog._LOGIN_FAIL_THRESHOLD=3 (token 劣化判定阈值)
+    login_degraded = consecutive_login_failures >= 3
 
     if not enabled:
         level = "unknown"
@@ -482,7 +497,12 @@ def _build_davmail_health(state: dict[str, str]) -> dict:
             token_age_days=token_age_days,
             oauth_error_active=bool(last_oauth_error),
             throttle_burst=throttle_5min >= 3,
+            login_degraded=login_degraded,
         )
+
+    # '' = 该轮跳过 login 探测 (TCP 不可达 / 未配置 cfg) → None
+    imap_login_raw = state.get("davmail.imap_login_ok")
+    imap_login_ok = None if not imap_login_raw else imap_login_raw == "1"
 
     return {
         "enabled": enabled,
@@ -490,6 +510,9 @@ def _build_davmail_health(state: dict[str, str]) -> dict:
         "last_probe_at": last_probe_at,
         "imap_reachable": imap_ok,
         "smtp_reachable": smtp_ok,
+        "imap_login_ok": imap_login_ok,
+        "consecutive_login_failures": consecutive_login_failures,
+        "last_auto_restart_at": state.get("davmail.last_auto_restart_at") or None,
         "consecutive_imap_failures": _as_int("davmail.consecutive_imap_failures"),
         "consecutive_smtp_failures": _as_int("davmail.consecutive_smtp_failures"),
         "token_age_days": token_age_days,

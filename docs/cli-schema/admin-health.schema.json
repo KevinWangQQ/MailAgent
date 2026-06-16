@@ -29,6 +29,7 @@
         "outbox_dispatch_enabled": {"type": "boolean"},
         "outbox_backlog": {"type": "integer", "minimum": 0},
         "outbox_warning": {"type": "string"},
+        "backend_degraded": {"type": "boolean"},
         "healthy": {"type": "boolean"},
         "error": {"type": "string"}
       }

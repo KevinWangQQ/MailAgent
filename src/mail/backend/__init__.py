@@ -14,7 +14,7 @@ Public API:
 from __future__ import annotations
 
 from src.mail.backend.base import BackendStartupError, IMailBackend
-from src.mail.backend.factory import create_backend
+from src.mail.backend.factory import create_backend, wait_for_backend_recovery
 from src.mail.backend.types import (
     BackendHealth,
     BackendOrigin,
@@ -40,4 +40,5 @@ __all__ = [
     "RadarTick",
     "SendResult",
     "create_backend",
+    "wait_for_backend_recovery",
 ]
