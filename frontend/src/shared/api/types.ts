@@ -232,6 +232,9 @@ export interface ComposeDraftOpts {
   cc?: string[]
   bcc?: string[]
   subject?: string
+  /** reply/reply-all 改主题断线程守卫的逃生口 (后端默认拒绝与原主题不同的 subject)。
+   *  UI compose 恒传 true — 用户在主题框里改是明确意图; 守卫防 agent/CLI 误用。 */
+  forceSubject?: boolean
   bodyHtml?: string
 }
 

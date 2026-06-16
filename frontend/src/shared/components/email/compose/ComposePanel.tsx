@@ -164,6 +164,8 @@ function ComposePanelInner({ internalId, mode, onClose }: Props): React.ReactEle
         cc,
         bcc,
         subject,
+        // UI 里改主题是用户明确意图 — 跳过后端 reply 改主题断线程守卫 (守卫防 agent/CLI 误用)
+        forceSubject: true,
         bodyHtml: getSanitizedHtml()
       }),
     onSuccess: () => {
@@ -192,6 +194,7 @@ function ComposePanelInner({ internalId, mode, onClose }: Props): React.ReactEle
         cc,
         bcc,
         subject,
+        forceSubject: true, // 同 draft: UI 改主题是明确意图
         bodyHtml: getSanitizedHtml()
       }),
     onSuccess: () => {

@@ -21,7 +21,7 @@ mailagent --help                 # 列 10 个 group (email/admin/attachment/llm/
 | `email body <internal_id> [--format {markdown,html,raw}]` | 邮件正文（markdown 默认；raw 仅哈希） |
 | `email search <query> [--mailbox/--since/--until/--limit/--no-snippet]` | FTS5 全文搜索 |
 | `admin stats [--section]` | 服务统计 (PR-2 仅 sync_store live_query; 其余 _source: not_implemented_in_pr2) |
-| `admin health` | SQLite 可达 + db_version + 必备表检查 (exit 0/1) |
+| `admin health` | SQLite 可达 + db_version + 必备表检查 (exit 0/1)；含 `outbox_backlog` 与 `backend_degraded`（serve 在 davmail probe 耗尽后进降级待恢复循环时为 true，期间同步暂停、每 5min 自动重试） |
 | `admin db-version` | 打印 db_version + expected + compatible |
 | `attachment list <internal_id>` | 列邮件附件（含 derived） |
 | `attachment download <attachment_id> [--dest PATH]` | 默认 stdout 二进制 / --dest 写文件返回 JSON 元信息 |
@@ -51,7 +51,8 @@ mailagent --help                 # 列 10 个 group (email/admin/attachment/llm/
 | `init {fetch-cache,analyze,fix-properties,fix-critical,update-parents,sync-new,all} [...]` | 初始化同步 7 个 sub-action (PR-5 inline 直调 InitialSync) |
 | `llm run <internal_id> [--dry-run/--force/--no-overwrite]` | 单封 LLM 分类 + Notion 写 AI 字段 |
 | `llm retry-failed [--limit N --dry-run]` | 跑 LLM retry queue |
-| `email draft <internal_id> [--mode reply-all\|reply/--extra-to/--extra-cc/--dry-run]` | 灵动岛 F1: 读 SQLite `llm_processing.labels_json.reply_suggestion_md` (SSoT, 含用户改过的) → 构造 DraftRequest → `backend.append_draft` (davmail IMAP APPEND / applescript sh) 创建回复草稿 |
+| `email draft <internal_id> [--mode reply-all\|reply\|forward/--extra-to/--extra-cc/--to/--cc/--bcc/--subject/--force-subject/--body-file/--body-html-file/--dry-run]` | 灵动岛 F1: 读 SQLite `llm_processing.labels_json.reply_suggestion_md` (SSoT, 含用户改过的) → 构造 DraftRequest → `backend.append_draft` (davmail IMAP APPEND / applescript sh) 创建回复草稿 |
+| `email send <internal_id> [同 draft 选项/--yes]` | 真实发送 (SMTP, 不可逆); 同源构造保 '草稿预览 = 实际发送内容'; json 模式必须 `--yes`。**reply/reply-all 下 `--subject` 与原主题规范化后 (剥 Re:/回复:/答复:) 不同 → E_INVALID_ARG**（改主题断 Outlook/Gmail 会话线程, 2026-06-12 事故）; 确需改题用 `--mode forward` 或 `--force-subject` |
 | `notion resync <internal_id>` | alias of `email resync` |
 | `notion update-flag <internal_id> [--is-read/--is-flagged/--processing-status]` | 手改 Notion 邮件页 flags |
 | `notion create-task <internal_id> [--as-meeting/--no-mark-done/--dry-run]` | 灵动岛 F3/F5: LLM (`task_extractor`) 决策填字段 (精炼 title / 智能 time / 日程类型 / 优先级) → 写日程库 (CALENDAR_DATABASE_ID) page + Email Inbox relation → 标原邮件已完成. `--as-meeting` 抽邮件提到的会议实际时间 (add_to_calendar), 默认建议处理时间 (convert_to_notion_task) |

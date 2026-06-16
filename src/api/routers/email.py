@@ -897,6 +897,7 @@ def _compose_request_from_body(internal_id: int, opts: dict[str, Any]):
         cc=_join(opts.get("cc")),
         bcc=_join(opts.get("bcc")),
         subject=subject if isinstance(subject, str) else None,
+        force_subject=bool(opts.get("forceSubject")),
         body_html=body_html if isinstance(body_html, str) and body_html else None,
     )
 
